@@ -1,0 +1,16 @@
+{
+  "name": "agent-board",
+  "owner": {
+    "name": "Acrazie"
+  },
+  "metadata": {
+    "description": "Claude Code mod: task progress bar and live subagents pane"
+  },
+  "plugins": [
+    {
+      "name": "agent-board",
+      "source": "./",
+      "description": "Task progress bar above the prompt and a live side pane of running subagents with tokens, context and cost"
+    }
+  ]
+}

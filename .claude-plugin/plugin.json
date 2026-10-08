@@ -1,0 +1,8 @@
+{
+  "name": "agent-board",
+  "version": "0.1.0",
+  "description": "Task progress bar above the prompt and a live side pane of running subagents with tokens, context and cost",
+  "author": { "name": "Acrazie" },
+  "repository": "https://github.com/Acrazie/agent-board",
+  "types": "./types/index.d.ts"
+}
