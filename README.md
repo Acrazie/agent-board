@@ -5,6 +5,7 @@ Claude Code mods by Acrazie. Each mod lives in its own folder under [`plugins/`]
 | Mod | What it does |
 | --- | --- |
 | [agent-board](plugins/agent-board) | Task progress bar above the prompt and a live side pane of running subagents with tokens, context and cost. |
+| [file-activity-tree](plugins/file-activity-tree) | Live file tree of what Claude reads, edits and writes; committed files turn green. |
 
 ## Install
 
@@ -12,6 +13,7 @@ At the prompt of a Claude Code terminal session, install the mods you want:
 
 ```
 /plugin install agent-board --marketplace Acrazie/agent-board
+/plugin install file-activity-tree --marketplace Acrazie/agent-board
 ```
 
 Answer `y` to add the marketplace, then pick a scope (user scope loads it in every session).

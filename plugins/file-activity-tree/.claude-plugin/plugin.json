@@ -1,0 +1,8 @@
+{
+  "name": "file-activity-tree",
+  "version": "0.1.0",
+  "description": "Live file tree of what Claude reads, edits and writes; committed files turn green",
+  "author": { "name": "Acrazie" },
+  "repository": "https://github.com/Acrazie/agent-board",
+  "types": "./types/index.d.ts"
+}
