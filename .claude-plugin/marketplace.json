@@ -4,12 +4,12 @@
     "name": "Acrazie"
   },
   "metadata": {
-    "description": "Claude Code mod: task progress bar and live subagents pane"
+    "description": "Claude Code mods by Acrazie"
   },
   "plugins": [
     {
       "name": "agent-board",
-      "source": "./",
+      "source": "./plugins/agent-board",
       "description": "Task progress bar above the prompt and a live side pane of running subagents with tokens, context and cost"
     }
   ]
