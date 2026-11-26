@@ -1,0 +1,8 @@
+{
+  "name": "pr-board",
+  "version": "0.1.0",
+  "description": "Side pane of your open weeki-io pull requests: changes requested first, a badge on new reviews, reviews and comments inline",
+  "author": { "name": "Acrazie" },
+  "repository": "https://github.com/Acrazie/agent-board",
+  "types": "./types/index.d.ts"
+}

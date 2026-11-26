@@ -16,6 +16,11 @@
       "name": "file-activity-tree",
       "source": "./plugins/file-activity-tree",
       "description": "Live file tree of what Claude reads, edits and writes; committed files turn green"
+    },
+    {
+      "name": "pr-board",
+      "source": "./plugins/pr-board",
+      "description": "Side pane of your open weeki-io pull requests: changes requested first, a badge on new reviews, reviews and comments inline"
     }
   ]
 }
