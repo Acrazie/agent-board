@@ -24,6 +24,14 @@ const mode = atom({ plugin: 'pr-board', key: 'mode' } as const, 'all' as 'all' |
 const family = atom({ plugin: 'pr-board', key: 'family' } as const, { status: 'idle', prs: [] } as FamilyLoad)
 
 const time = (iso: string) => iso.slice(0, 16).replace('T', ' ')
+/**
+ * `HH:MM` at the instant `ms`, shifted by `offsetMinutes` as `Date#getTimezoneOffset` gives it (minutes behind UTC,
+ * so -60 for UTC+1). The offset is the one in force at that instant, so a daylight-saving change is followed.
+ */
+export const clockTime = (ms: number, offsetMinutes: number) => new Date(ms - offsetMinutes * 60_000).toISOString().slice(11, 16)
+/** The person's local time of day, as their machine's time zone sets it. */
+const localTime = (iso: string) => clockTime(Date.parse(iso), new Date(Date.parse(iso)).getTimezoneOffset())
+
 const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
 
 const ago = (ms: number) => {
@@ -422,7 +430,7 @@ export const register: Register = on => {
         {hasToggle ? tab('all', 'Toutes', countAll) : null}
         {hasToggle ? (bound.status === 'unavailable' ? unavailable : tab('session', 'Cette session', countSession)) : null}
         {hasToggle ? null : <Box flexGrow={1} />}
-        <Text dimColor>{state.isLoading ? 'actualisation…' : state.fetchedAt ? state.fetchedAt.slice(11, 16) : ''}</Text>
+        <Text dimColor>{state.isLoading ? 'actualisation…' : state.fetchedAt ? localTime(state.fetchedAt) : ''}</Text>
         {refreshControl}
       </Box>
     )

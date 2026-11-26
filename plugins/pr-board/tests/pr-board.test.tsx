@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Mounted } from 'claude-code/testing'
 
 import { FETCH_ARGV, ID_SHAPE, THREADS_ARGV } from '../hooks/github'
+import { clockTime } from '../hooks/register'
 
 const PANE = {
   plugin: 'pr-board',
@@ -1799,7 +1800,9 @@ test('header: one full-width row of band tabs with their counts, the short time 
   }
   // A dim short time, no "Actualiser" and no long "à jour … UTC".
   expect(stamp.props?.dimColor).toBe(true)
-  expect(lineText(stamp).join('')).toBe('11:00')
+  // The machine's local time of the last answer, never UTC.
+  const at = new Date(Date.parse('2026-11-26T11:00:00Z'))
+  expect(lineText(stamp).join('')).toBe(`${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`)
   expect(await ui.find({ type: 'Text', text: /^Actualiser|^à jour|UTC/ })).toBeUndefined()
   for (const key of ['refresh', 'mode:all', 'mode:session']) expect(await ui.find({ type: 'Button', key })).toBeUndefined()
   // The refresh is an Svg in a band pressed through its Client; R on a focused band refreshes too.
@@ -1863,4 +1866,19 @@ test('header: while the app fails, Sessions indisponibles takes the Cette sessio
   expect(row[0]?.props?.backgroundColor).toBe('#8E8E9326')
   expect(lineText(partsOf(row[0]!).parts[0]).join('')).toBe(`Toutes ${FAMILY_LIST.length}`)
   await ui.unmount()
+})
+
+test('the header time is local: UTC+1 in winter, UTC+2 in summer, and it follows the daylight-saving change', () => {
+  // Europe/Paris, as Date#getTimezoneOffset reports it at each instant.
+  expect(clockTime(Date.parse('2026-11-26T17:21:00Z'), -60)).toBe('18:21')
+  expect(clockTime(Date.parse('2026-07-01T17:21:00Z'), -120)).toBe('19:21')
+  // 25 October 2026: 03:00 summer time becomes 02:00 winter time at 01:00 UTC.
+  expect(clockTime(Date.parse('2026-10-25T00:59:00Z'), -120)).toBe('02:59')
+  expect(clockTime(Date.parse('2026-10-25T01:00:00Z'), -60)).toBe('02:00')
+  // 29 March 2026: 02:00 winter time becomes 03:00 summer time at 01:00 UTC.
+  expect(clockTime(Date.parse('2026-03-29T00:59:00Z'), -60)).toBe('01:59')
+  expect(clockTime(Date.parse('2026-03-29T01:00:00Z'), -120)).toBe('03:00')
+  // Across midnight, and west of UTC.
+  expect(clockTime(Date.parse('2026-11-26T23:30:00Z'), -60)).toBe('00:30')
+  expect(clockTime(Date.parse('2026-11-26T03:05:00Z'), 300)).toBe('22:05')
 })
