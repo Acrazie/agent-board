@@ -230,28 +230,42 @@ const drawnByKey = (node: unknown, key: string): { hover?: unknown } | undefined
   return undefined
 }
 /**
- * A control line's visible row and, for a desktop band, its cover: a band's
- * outer Box holds the padded row then the cover; any other line is the row itself.
+ * A control line's visible parts and, for a desktop band, its cover: the band's
+ * last child, an absolute Box; any other line has no cover.
  */
 const partsOf = (line: Drawn) => {
-  const [first, cover] = (line.children ?? []) as Drawn[]
-  return first?.type === 'Box' && cover?.props?.position === 'absolute'
-    ? { row: first, parts: (first.children ?? []) as Drawn[], cover }
-    : { row: line, parts: (line.children ?? []) as Drawn[], cover: undefined }
+  const children = (line.children ?? []) as Drawn[]
+  const last = children[children.length - 1]
+  return last?.props?.position === 'absolute' ? { row: line, parts: children.slice(0, -1), cover: last } : { row: line, parts: children, cover: undefined }
 }
-/** The four-edge pin and full-size Client a band's cover must have. */
+/**
+ * A band's cover: pinned to the band's four edges and clipped to it, holding a
+ * Client whose height is a fixed number of rows, never a percentage, which on
+ * desktop either shrank the region to one row or swelled the band past its neighbours.
+ */
 const expectCover = (cover: Drawn | undefined, key: string) => {
-  expect(cover?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 })
+  expect(cover?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden' })
   expect(cover?.props?.width).toBeUndefined()
   expect(cover?.props?.height).toBeUndefined()
   expect(cover?.children?.map(child => (child as Drawn).type)).toEqual(['Client'])
-  expect((cover?.children?.[0] as Drawn).props).toMatchObject({ key, module: 'hooks/band.tsx', width: '100%', height: '100%' })
+  const client = (cover?.children?.[0] as Drawn).props!
+  expect(client).toMatchObject({ key, module: 'hooks/band.tsx', width: '100%' })
+  expect(typeof client.height).toBe('number')
+  expect(client.height as number).toBeGreaterThan(1)
 }
-/** A band's outer Box draws the shape with no padding; its inner row carries the padding. */
-const expectBandShape = (line: Drawn, row: Drawn) => {
-  expect(line.props).toMatchObject({ position: 'relative', width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
-  for (const side of ['padding', 'paddingX', 'paddingY', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight']) expect(line.props?.[side]).toBeUndefined()
-  expect(row.props).toMatchObject({ flexDirection: 'row', alignItems: 'center', width: '100%', paddingX: 'sm', paddingY: 'xs' })
+/** A band: one compact padded row that draws the shape, as at its first desktop version. */
+const expectBandShape = (line: Drawn) => {
+  expect(line.props).toMatchObject({
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    paddingX: 'sm',
+    paddingY: 'xs',
+    backgroundColor: '#8E8E9326',
+    borderStyle: 'round',
+    borderColor: '#8E8E9326',
+  })
 }
 /** The open Détails expansion, if any. */
 const openDetails = async (ui: Ui) => (await ui.findAll({ type: 'Box' })).find(box => box.key?.startsWith('details:'))
@@ -477,11 +491,11 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     if (surface === 'desktop') {
       // Détails is a band too: chevron, the dim text, and the Client cover; no Button, and the hover of a band.
       expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeUndefined()
-      const { row, parts, cover } = partsOf(details)
+      const { parts, cover } = partsOf(details)
       expect(parts.map(child => child.type)).toEqual(['Svg', 'Text'])
       expect(parts[1]?.props?.dimColor).toBe(true)
       expect(lineText(parts[1]).join('')).toBe('Détails')
-      expectBandShape(details, row)
+      expectBandShape(details)
       expect(drawnByKey(await ui.drawn(), details.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
       expectCover(cover, 'band:pr:P67')
     } else {
@@ -495,12 +509,12 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     for (const band of bands) {
       // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
       expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
-      const { row, parts, cover } = partsOf(band)
+      const { parts, cover } = partsOf(band)
       if (surface === 'desktop') {
         // No name Button: the name is a Text, and an empty Client pinned over the whole band, padding included, takes the press.
         expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text'])
         expect(await ui.find({ type: 'Button', key: band.key!.slice('line:'.length) })).toBeUndefined()
-        expectBandShape(band, row)
+        expectBandShape(band)
         // The whole band lightens under the pointer (a hover is drawn beside the props, so it is read from the drawing).
         expect(drawnByKey(await ui.drawn(), band.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
         expect(parts[2]?.props?.flexGrow).toBe(1)
@@ -558,8 +572,8 @@ test('desktop: a press anywhere on a repository band toggles the row through the
   const { parts, cover } = partsOf(line as Drawn)
   expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Text'])
   expectCover(cover, band)
-  // The module draws one empty Box filling its region, so the region keeps the cover's size.
-  expect((await ui.findAll({ type: 'Box', in: band })).map(box => box.props)).toEqual([{ width: '100%', height: '100%' }])
+  // The module draws one empty Box with no height of its own, so it never sizes the region.
+  expect((await ui.findAll({ type: 'Box', in: band })).map(box => box.props)).toEqual([{ width: '100%' }])
   expect(await ui.find({ type: 'Button', key: row })).toBeUndefined()
 
   // A left press far right in the region expands the row; a right press does nothing.
@@ -622,6 +636,46 @@ test('desktop: Détails is a band whose Client post opens and closes the expansi
   await clock.settle()
   expect(await openDetails(ui)).toBeUndefined()
   expect(await isBadged(ui, 7)).toBe(false)
+  await ui.unmount()
+})
+
+test('desktop: each band press flips its row exactly once, however many presses come in a row', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const row = repoKey('open', 'weeki_atlas_api')
+  const band = `band:${row}`
+  const isOpen = async () => (await rowOf(ui, row))?.startsWith('∨')
+
+  const states: (boolean | undefined)[] = [await isOpen()]
+  for (let press = 0; press < 4; press++) {
+    await ui.pointer({ type: 'down', x: 5, y: 1, button: 'left', in: band })
+    await ui.pointer({ type: 'up', x: 5, y: 1, button: 'left', in: band })
+    await clock.settle()
+    states.push(await isOpen())
+  }
+  expect(states).toEqual([false, true, false, true, false])
+  // Two posts back to back flip it twice: open, then closed again.
+  await ui.post({ toggle: true }, { in: band })
+  await ui.post({ toggle: true }, { in: band })
+  await clock.settle()
+  expect(await isOpen()).toBe(false)
+  // A pointer moving over the band, entering or leaving it presses nothing.
+  for (const type of ['enter', 'move', 'leave'] as const) await ui.pointer({ type, x: 5, y: 1, in: band })
+  await clock.settle()
+  expect(await isOpen()).toBe(false)
+  // The same for Détails.
+  await ui.post({ toggle: true }, { in: 'band:pr:P67' })
+  await clock.settle()
+  expect((await openDetails(ui))?.key).toBe('details:P67')
+  await ui.post({ toggle: true }, { in: 'band:pr:P67' })
+  await ui.post({ toggle: true }, { in: 'band:pr:P67' })
+  await clock.settle()
+  expect((await openDetails(ui))?.key).toBe('details:P67')
+  expect([...w.store.keys()]).toEqual(['seen'])
   await ui.unmount()
 })
 

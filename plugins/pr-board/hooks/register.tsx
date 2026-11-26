@@ -39,6 +39,8 @@ const CHEVRON_DOWN = chevronSvg('M4 6l4 4 4-4')
 const BAND = '#8E8E9326'
 // The band under the pointer, a little lighter.
 const BAND_HOVER = '#8E8E9340'
+// Rows of a band's Client region: more than the band's one line and padding, the excess clipped by its cover.
+const BAND_ROWS = 3
 
 /** À corriger's repositories start expanded, every other one collapsed. */
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
@@ -249,28 +251,32 @@ export const register: Register = on => {
         {after}
       </Box>
     )
-    // On desktop, a control drawn as a full-width rounded grey band keyed `line:<key>`. The outer Box carries the
-    // shape (background, round border, hover) and no padding; an inner row carries the padding, the chevron and what
-    // it shows; an empty Client `band:<key>` pinned to all four edges of the outer Box takes the press over the whole
-    // shape, padding included (see `ui.message`).
+    // On desktop, a control drawn as a full-width rounded grey band keyed `line:<key>`: the chevron, what it shows,
+    // then an empty Client `band:<key>` that takes the press (see `ui.message`). The Client lies in a cover pinned to
+    // the band's four edges and clipped to it; its region has a fixed height in rows, taller than the band, since a
+    // percentage height has nothing definite to resolve against there (one row, or a region that swells the band and
+    // spills over its neighbours).
     const band = (key: string, isOpen: boolean, ...shown: (ReturnType<typeof Box> | null)[]) =>
       Client ? (
         <Box
           key={`line:${key}`}
           position="relative"
+          flexDirection="row"
+          alignItems="center"
+          columnGap="xs"
           width="100%"
           backgroundColor={BAND}
           borderStyle="round"
           borderColor={BAND}
+          paddingX="sm"
+          paddingY="xs"
           hover={{ backgroundColor: BAND_HOVER, borderColor: BAND_HOVER }}
         >
-          <Box flexDirection="row" alignItems="center" columnGap="xs" width="100%" paddingX="sm" paddingY="xs">
-            {chevron(isOpen)}
-            {shown}
-          </Box>
+          {chevron(isOpen)}
+          {shown}
           {/* Last, so it lies over everything before it; it draws nothing, so all of them stay visible. */}
-          <Box position="absolute" top={0} left={0} right={0} bottom={0}>
-            <Client key={`band:${key}`} module="./band.tsx" width="100%" height="100%" />
+          <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+            <Client key={`band:${key}`} module="./band.tsx" width="100%" height={BAND_ROWS} />
           </Box>
         </Box>
       ) : null
