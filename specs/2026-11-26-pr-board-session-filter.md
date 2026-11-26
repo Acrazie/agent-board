@@ -41,7 +41,7 @@ Add a "Cette session" filter to the pr-board pane. It shows only the open PRs bo
 - Merged, closed, or non-weeki-io PRs bound to a session: the user chose to show open weeki-io PRs only.
 - Reading the desktop app's session files on disk: the user chose the app's tools only.
 - Remembering the chosen mode across pane openings.
-- Any new `gh` command, or any change to the existing query.
+- Any new `gh` command, or any change to the existing query, with one exception: the query gains a stable order, `sort:created-asc`, so paginated reads do not duplicate or skip PRs opened during a read. User's decision of 2026-11-26, after review round 1.
 
 ## 3. Constraints
 
