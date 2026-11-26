@@ -1458,3 +1458,309 @@ test('without a reviewDecision, a reviewer\'s latest decisive review sends the P
   expect(new Set(rows.slice(2))).toEqual(new Set(['pr:S2', 'pr:S3', 'pr:S4', 'pr:S6']))
   await ui.unmount()
 })
+
+// --- Cette session: the PRs bound to this session and to every session it started.
+
+const sid = (n: number) => `local_00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+const GRANDPARENT = sid(1)
+const PARENT = sid(2)
+const CHILD_A = sid(3) // "Plancher Light": agents_api#45, with map_api#55 among its other bound PRs
+const CHILD_B = sid(4)
+const GRANDCHILD = sid(5)
+const LONE = sid(6)
+
+type Status = { pr?: { number: number; repo: string; state: string }; otherBoundPrs?: { number: number; repo: string; state: string }[] }
+const bound = (repo: string, number: number, state = 'open') => ({ number, repo: repo.includes('/') ? repo : `weeki-io/${repo}`, state })
+const STATUSES: Record<string, Status> = {
+  [GRANDPARENT]: { pr: bound('weeki_atlas_api', 7) },
+  [PARENT]: {},
+  [CHILD_A]: { pr: bound('weeki_agents_api', 45), otherBoundPrs: [bound('weeki_map_api', 55)] },
+  [CHILD_B]: { pr: bound('weeki_user_api', 66) },
+  [GRANDCHILD]: { pr: bound('weeki_dataset_api_symfony', 17) },
+  [LONE]: { pr: bound('Acrazie/agent-board', 2, 'merged'), otherBoundPrs: [bound('Acrazie/agent-board', 1, 'merged')] },
+}
+// The linked family as each session sees it: its parent and siblings are listed too, never itself.
+const ROWS = [
+  { sessionId: GRANDPARENT, title: 'grand-parent' },
+  { sessionId: PARENT, title: 'Stratégie de testing microservices Symfony', startedBy: GRANDPARENT },
+  { sessionId: CHILD_A, title: 'Plancher Light', startedBy: PARENT, prNumber: 55 },
+  { sessionId: CHILD_B, title: 'user', startedBy: PARENT, prNumber: 66 },
+  { sessionId: GRANDCHILD, title: 'dataset', startedBy: CHILD_B, prNumber: 17 },
+]
+
+const FAMILY_LIST: Raw[] = [
+  ...TODAY,
+  { id: 'P45', number: 45, title: 'agents floor', repo: 'weeki_agents_api', updatedAt: '2026-11-26T08:00:00Z' },
+  { id: 'P55', number: 55, title: 'map floor', repo: 'weeki_map_api', updatedAt: '2026-11-26T08:10:00Z', reviewDecision: 'CHANGES_REQUESTED' },
+  { id: 'P66', number: 66, title: 'user floor', repo: 'weeki_user_api', updatedAt: '2026-11-26T08:20:00Z' },
+  { id: 'P17', number: 17, title: 'dataset floor', repo: 'weeki_dataset_api_symfony', updatedAt: '2026-11-26T08:30:00Z', isDraft: true },
+]
+
+type McpCall = { server: string; tool: string; args: Record<string, unknown> }
+type Fail = { tool: string; how: 'deny' | 'isError' } | undefined
+const text = (value: unknown) => ({ value: { content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }], isError: false } })
+
+/** Stands for the desktop app's tools as `self` sees them; `fail` breaks one tool. */
+const app = (on: On, self: string, options: { rows?: unknown[]; fail?: { current: Fail } } = {}) => {
+  const calls: McpCall[] = []
+  on('mcp.call', (_, e) => {
+    calls.push(e)
+    const fail = options.fail?.current
+    if (fail?.tool === e.tool) return fail.how === 'deny' ? { deny: 'app down' } : { value: { content: [{ type: 'text' as const, text: 'boom' }], isError: true } }
+    if (e.server === 'ccd_session_mgmt' && e.tool === 'get_session') return text({ sessionId: self, title: 'x' })
+    if (e.server === 'ccd_session_mgmt' && e.tool === 'list_sessions') {
+      const rows = (options.rows ?? ROWS).filter(row => (row as { sessionId?: unknown }).sessionId !== self)
+      return text(rows.length === 0 ? 'No other sessions found.' : rows)
+    }
+    if (e.server === 'ccd_pr' && e.tool === 'get_status') {
+      const id = (e.args.session_id as string | undefined) ?? self
+      const status = STATUSES[id] ?? {}
+      return text({ bound: status.pr !== undefined, ...status, otherBoundPrs: status.otherBoundPrs ?? [] })
+    }
+    return { deny: `unexpected ${e.server}.${e.tool}` }
+  })
+  return calls
+}
+
+// Only the three read-only app tools, with a session id only of the `local_<uuid>` shape.
+const expectAllowedCalls = (calls: McpCall[]) => {
+  for (const call of calls) {
+    if (call.tool === 'get_session') expect(call).toEqual({ server: 'ccd_session_mgmt', tool: 'get_session', args: { session_id: 'self' } })
+    else if (call.tool === 'list_sessions') expect(call).toEqual({ server: 'ccd_session_mgmt', tool: 'list_sessions', args: { linked: true, limit: 200 } })
+    else {
+      expect(call.server).toBe('ccd_pr')
+      expect(call.tool).toBe('get_status')
+      const keys = Object.keys(call.args)
+      if (keys.length > 0) {
+        expect(keys).toEqual(['session_id'])
+        expect(call.args.session_id).toMatch(/^local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+      }
+    }
+  }
+}
+
+/** The PRs the list draws, as `repo#number`, once every repository is expanded. */
+const listedOf = async (ui: Ui) => {
+  await expandAll(ui)
+  const links = await ui.findAll({ type: 'Link' })
+  return links.map(link => String(link.props.href).replace('https://github.com/weeki-io/', '').replace('/pull/', '#')).sort()
+}
+const modeOf = async (ui: Ui) => {
+  const session = await ui.find({ type: 'Button', key: 'mode:session' })
+  const all = await ui.find({ type: 'Button', key: 'mode:all' })
+  if (!session || !all) return undefined
+  return session.props.variant === 'primary' ? 'session' : 'all'
+}
+const ALL = ['weeki_agents_api#45', 'weeki_atlas#67', 'weeki_atlas_api#7', 'weeki_atlas_frontend#18', 'weeki_dataset_api_symfony#17', 'weeki_map_api#55', 'weeki_notebook_api#6', 'weeki_user_api#66']
+
+test('Cette session in a parent: its PRs and those of every sub-session at any depth, never its own parent; the pane opens on it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const calls = app(on, PARENT)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['desktop', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await modeOf(ui)).toBe('session')
+    expect(await listedOf(ui)).toEqual(['weeki_agents_api#45', 'weeki_dataset_api_symfony#17', 'weeki_map_api#55', 'weeki_user_api#66'])
+    // Sections and repository grouping work as in Toutes; empty sections stay hidden.
+    expect(await headsOf(ui)).toEqual(['∨ À corriger 1', '∨ Ouvertes 2', '∨ Drafts 1'])
+
+    await ui.press({ key: 'mode:all' })
+    expect(await modeOf(ui)).toBe('all')
+    expect(await listedOf(ui)).toEqual(ALL)
+    await ui.press({ key: 'mode:session' })
+    await ui.unmount()
+  }
+  // The grand-parent's own session is never read.
+  expect(calls.some(call => call.args.session_id === GRANDPARENT)).toBe(false)
+  expectAllowedCalls(calls)
+})
+
+test('Cette session in a sub-session: only its own bound PRs, never its parent’s or siblings’', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const calls = app(on, CHILD_A)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await modeOf(ui)).toBe('session')
+  expect(await listedOf(ui)).toEqual(['weeki_agents_api#45', 'weeki_map_api#55'])
+  await ui.unmount()
+  expect(calls.filter(call => call.tool === 'get_status').map(call => call.args)).toEqual([{}])
+  expectAllowedCalls(calls)
+})
+
+test('a lone session whose bound PRs are merged or outside weeki-io opens on Toutes; Cette session says none is linked', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const calls = app(on, LONE, { rows: [] })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await modeOf(ui)).toBe('all')
+  expect(await listedOf(ui)).toEqual(ALL)
+  await ui.press({ key: 'mode:session' })
+  expect(await modeOf(ui)).toBe('session')
+  expect(await ui.find({ type: 'Text', text: 'Aucune PR ouverte liée à cette session.' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Aucune PR ouverte dans weeki-io.' })).toBeUndefined()
+  await ui.unmount()
+  expectAllowedCalls(calls)
+})
+
+test('a lone session with an open bound PR opens on Cette session and shows only that PR', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  app(on, CHILD_B, { rows: [] })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await modeOf(ui)).toBe('session')
+  expect(await listedOf(ui)).toEqual(['weeki_user_api#66'])
+  await ui.unmount()
+})
+
+for (const tool of ['get_session', 'list_sessions', 'get_status'] as const) {
+  for (const how of ['deny', 'isError'] as const) {
+    test(`a failing ${tool} (${how}) reads "Sessions indisponibles" and keeps Toutes, never "no PRs"`, async ($, on) => {
+      const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+      world(on, { current: ok(FAMILY_LIST) })
+      const fail = { current: { tool, how } as Fail }
+      app(on, PARENT, { fail })
+      await $.command.run(PRS)
+      await clock.settle()
+
+      const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+      expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeDefined()
+      expect(await modeOf(ui)).toBeUndefined()
+      expect(await listedOf(ui)).toEqual(ALL)
+      expect(await ui.find({ type: 'Text', text: /Aucune PR/ })).toBeUndefined()
+
+      // The next refresh reads the family again; once the app answers, the toggle is back.
+      fail.current = undefined
+      await ui.press({ key: 'refresh' })
+      expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeUndefined()
+      expect(await modeOf(ui)).toBe('all')
+      await ui.unmount()
+    })
+  }
+}
+
+test('a session id that is not local_<uuid> never reaches get_status, nor do the sessions below it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const bad = 'local_../../etc'
+  const calls = app(on, PARENT, {
+    rows: [
+      { sessionId: CHILD_A, startedBy: PARENT },
+      { sessionId: bad, startedBy: PARENT },
+      { sessionId: 'local_00000000-0000-4000-8000-00000000000G', startedBy: PARENT },
+      { sessionId: GRANDCHILD, startedBy: bad },
+    ],
+  })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  expect(calls.filter(call => call.tool === 'get_status').map(call => call.args)).toEqual([{}, { session_id: CHILD_A }])
+  expectAllowedCalls(calls)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await listedOf(ui)).toEqual(['weeki_agents_api#45', 'weeki_map_api#55'])
+  await ui.unmount()
+})
+
+test('the terminal has no toggle and stays on Toutes', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Button', key: 'mode:session' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'mode:all' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeUndefined()
+  expect(await listedOf(ui)).toEqual(ALL)
+  await ui.unmount()
+})
+
+test('the mode lives in session memory: toggling leaves $.store as it was, and each /prs picks the mode again', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const w = world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT)
+  await $.command.run(PRS)
+  await clock.settle()
+  const before = JSON.stringify([...w.store])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'mode:all' })
+  await ui.press({ key: 'mode:session' })
+  await ui.press({ key: 'mode:all' })
+  expect(JSON.stringify([...w.store])).toBe(before)
+  expect([...w.store.keys()].every(key => key === 'seen')).toBe(true)
+
+  // A refresh keeps the mode the person chose; reopening the pane chooses again.
+  await ui.press({ key: 'refresh' })
+  expect(await modeOf(ui)).toBe('all')
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(await modeOf(ui)).toBe('session')
+  await ui.unmount()
+})
+
+test('the family and its bindings are re-read on /prs, on the 2-minute timer and from the refresh button', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const calls = app(on, PARENT)
+  const reads = () => calls.filter(call => call.tool === 'get_session').length
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(reads()).toBe(1)
+  await clock.advance(120_000)
+  expect(reads()).toBe(2)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'refresh' })
+  expect(reads()).toBe(3)
+  await ui.unmount()
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(reads()).toBe(4)
+})
+
+test('switching to Cette session closes a PR expanded outside the family: a refresh never stamps it, and it stays closed back on Toutes', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(FAMILY_LIST) }
+  const w = world(on, gh)
+  app(on, LONE, { rows: [] })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await pressControl(ui, 'pr:P67')
+  expect(await openDetails(ui)).toBeDefined()
+  await ui.unmount()
+
+  const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await desk.press({ key: 'mode:session' })
+  expect(await openDetails(desk)).toBeUndefined()
+  // Back on Toutes, the PR stays closed, as after collapsing its repository.
+  await desk.press({ key: 'mode:all' })
+  await expandAll(desk)
+  expect(await openDetails(desk)).toBeUndefined()
+
+  // Hidden by the filter, a PR that gets new activity is not stamped by a refresh.
+  await pressControl(desk, 'pr:P67')
+  expect(await openDetails(desk)).toBeDefined()
+  await desk.press({ key: 'mode:session' })
+  const seenBefore = JSON.stringify(w.store.get('seen'))
+  const later = FAMILY_LIST.map(raw =>
+    raw.id === 'P67' ? { ...raw, comments: [...(raw.comments ?? []), { id: 'C9', author: 'YannAndreWeeki', body: 'one more', at: '2026-11-26T10:50:00Z' }] } : raw,
+  )
+  gh.current = ok(later)
+  await desk.press({ key: 'refresh' })
+  expect(JSON.stringify(w.store.get('seen'))).toBe(seenBefore)
+  await desk.unmount()
+})

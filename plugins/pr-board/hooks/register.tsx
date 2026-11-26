@@ -1,8 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Pr, PrLoad } from '../types'
+import type { FamilyLoad, Pr, PrLoad } from '../types'
 import { clean, fetchOpenPrs } from './github'
+import { prKey, readFamilyPrs } from './sessions'
 
 const PANE = 'pr-board'
 const REFRESH_MS = 2 * 60 * 1000
@@ -18,6 +19,9 @@ const repoRows = atom({ plugin: 'pr-board', key: 'repoRows' } as const, {} as Re
 const closedSections = atom({ plugin: 'pr-board', key: 'closedSections' } as const, [] as string[])
 // Keys of the band Clients that failed on a surface (`ui.fault`); those bands are drawn with their Button instead. Session memory only.
 const faultedBands = atom({ plugin: 'pr-board', key: 'faultedBands' } as const, [] as string[])
+// Toutes or Cette session, chosen again each time `/prs` opens the pane. Session memory only.
+const mode = atom({ plugin: 'pr-board', key: 'mode' } as const, 'all' as 'all' | 'session')
+const family = atom({ plugin: 'pr-board', key: 'family' } as const, { status: 'idle', prs: [] } as FamilyLoad)
 
 const time = (iso: string) => iso.slice(0, 16).replace('T', ' ')
 const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
@@ -48,6 +52,14 @@ const BAND_ROWS = 3
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
 
 const sectionOf = (pr: Pr): SectionId => (pr.needsChanges ? 'fix' : pr.isDraft ? 'draft' : 'open')
+
+const isBound = (bound: FamilyLoad, pr: Pr) => bound.prs.includes(prKey(pr.repo, pr.number))
+
+/** The PRs the list shows: all of them, or under Cette session only those bound to the session's family. */
+const filterPrs = (prs: Pr[], current: 'all' | 'session', bound: FamilyLoad) =>
+  current === 'session' && bound.status === 'ok' ? prs.filter(pr => isBound(bound, pr)) : prs
+
+const shownPrs = async ($: EngineInterface, prs: Pr[]) => filterPrs(prs, await read($, mode), await read($, family))
 
 /** PRs newest first, grouped by repository in the order of each one's newest PR. */
 const byRepo = (prs: Pr[]) => {
@@ -110,22 +122,33 @@ const stamped = (current: Seen, pr: Pr | undefined): Seen => {
 }
 
 // The expanded PR counts as open only while its row is open in `prs`: a
-// reopened pane or a PR that changed section can hide it, and a hidden PR must
-// never be stamped as seen. Called inside the queue.
+// reopened pane, a PR that changed section or the Cette session filter can
+// hide it, and a hidden PR must never be stamped as seen. Called inside the queue.
 const closeHidden = async ($: EngineInterface, prs: Pr[]) => {
   const openId = await read($, expanded)
-  const pr = prs.find(one => one.id === openId)
+  const pr = (await shownPrs($, prs)).find(one => one.id === openId)
   const isShown = pr && !(await read($, closedSections)).includes(sectionOf(pr)) && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo)
   if (openId !== null && !isShown) await update($, expanded, () => null)
 }
 
 let isRefreshing = false
+// `/prs` opened the pane: the next refresh to finish picks the mode it opens on.
+let isOpening = false
+
+const readFamily = async ($: EngineInterface): Promise<FamilyLoad> => {
+  try {
+    return { status: 'ok', prs: await readFamilyPrs((server, tool, args) => $.mcp.call(server, tool, args)) }
+  } catch {
+    return { status: 'unavailable', prs: [] }
+  }
+}
 
 const refresh = async ($: EngineInterface) => {
   if (isRefreshing) return
   isRefreshing = true
   try {
     await update($, load, (state): PrLoad => ({ ...state, isLoading: true }))
+    const bound = readFamily($)
     let next: PrLoad
     try {
       const { login, prs } = await fetchOpenPrs(argv => $.process.run([...argv], { timeoutMs: 30_000 }))
@@ -133,7 +156,15 @@ const refresh = async ($: EngineInterface) => {
     } catch (error) {
       next = { status: 'error', isLoading: false, prs: [], error: clean(error instanceof Error ? error.message : String(error)) }
     }
+    const nextFamily = await bound
     await inQueue(async () => {
+      await update($, family, () => nextFamily)
+      if (isOpening) {
+        isOpening = false
+        // The pane opens on Cette session when one of the family's bound PRs is in the list.
+        const isFamilyListed = next.status === 'ok' && nextFamily.status === 'ok' && next.prs.some(pr => isBound(nextFamily, pr))
+        await update($, mode, () => (isFamilyListed ? 'session' : 'all'))
+      }
       if (next.status === 'ok') {
         const { prs } = next
         await closeHidden($, prs)
@@ -180,6 +211,13 @@ const toggleRepo = ($: EngineInterface, section: SectionId, repo: string, prIds:
     if (wasOpen && openId !== null && prIds.includes(openId)) await update($, expanded, () => null)
   }).catch(() => undefined)
 
+// Leaving Toutes hides the PR expanded outside the family, as collapsing does.
+const setMode = ($: EngineInterface, next: 'all' | 'session') =>
+  inQueue(async () => {
+    await update($, mode, () => next)
+    await closeHidden($, (await read($, load)).prs)
+  }).catch(() => undefined)
+
 // Collapsing a section hides the PR expanded in it, as a repository does.
 const toggleSection = ($: EngineInterface, section: SectionId) =>
   inQueue(async () => {
@@ -199,8 +237,10 @@ export const register: Register = on => {
     await inQueue(async () => {
       await update($, repoRows, () => ({}))
       await update($, closedSections, () => [])
+      await update($, mode, () => 'all')
       await closeHidden($, (await read($, load)).prs)
     })
+    isOpening = true
     const { isPlaced } = await $.ui.open({ id: PANE, title: 'Pull requests' })
     void refresh($)
     if (!isTimerOn) {
@@ -215,7 +255,7 @@ export const register: Register = on => {
   on('ui.message', async ($, e, next) => {
     const isToggle = e.data !== null && typeof e.data === 'object' && (e.data as { toggle?: unknown }).toggle === true
     if (e.requestId === PANE && e.module.endsWith('band.tsx') && isToggle) {
-      const { prs } = await read($, load)
+      const prs = await shownPrs($, (await read($, load)).prs)
       if (e.element.startsWith('band:repo:')) {
         const rest = e.element.slice('band:repo:'.length)
         const cut = rest.indexOf(':')
@@ -297,6 +337,11 @@ export const register: Register = on => {
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
+    const bound = await read($, family)
+    // The terminal has none of the desktop app's tools: no toggle, and the list stays on Toutes.
+    const hasToggle = e.surface !== 'terminal'
+    const current = hasToggle ? await read($, mode) : 'all'
+    const isFiltered = current === 'session' && bound.status === 'ok'
 
     const header = (
       <Box flexDirection="row" gap={1}>
@@ -308,11 +353,39 @@ export const register: Register = on => {
         </Text>
       </Box>
     )
+    // Toutes or Cette session; while any app call fails, a dim line instead and the list stays on Toutes.
+    const modes = !hasToggle ? null : bound.status === 'unavailable' ? (
+      <Text dimColor>Sessions indisponibles</Text>
+    ) : (
+      <Box flexDirection="row" gap={1}>
+        {(
+          [
+            ['all', 'Toutes'],
+            ['session', 'Cette session'],
+          ] as const
+        ).map(([id, label]) => (
+          <Button
+            key={`mode:${id}`}
+            variant={current === id ? 'primary' : 'secondary'}
+            dimColor={current !== id}
+            onPress={() => void setMode($, id)}
+          >
+            {label}
+          </Button>
+        ))}
+      </Box>
+    )
+    const top = (
+      <Box flexDirection="column" gap={1}>
+        {header}
+        {modes}
+      </Box>
+    )
 
     if (state.status === 'error') {
       return (
         <Box flexDirection="column" gap={1}>
-          {header}
+          {top}
           <Text color="red" bold>
             Impossible de lire vos PR
           </Text>
@@ -324,16 +397,17 @@ export const register: Register = on => {
     if (state.status !== 'ok') {
       return (
         <Box flexDirection="column" gap={1}>
-          {header}
+          {top}
           <Text dimColor>Chargement des PR…</Text>
         </Box>
       )
     }
-    if (state.prs.length === 0) {
+    const listed = filterPrs(state.prs, current, bound)
+    if (listed.length === 0) {
       return (
         <Box flexDirection="column" gap={1}>
-          {header}
-          <Text>Aucune PR ouverte dans weeki-io.</Text>
+          {top}
+          <Text>{isFiltered ? 'Aucune PR ouverte liée à cette session.' : 'Aucune PR ouverte dans weeki-io.'}</Text>
         </Box>
       )
     }
@@ -344,9 +418,9 @@ export const register: Register = on => {
     const badged = (pr: Pr) => openId !== pr.id && isNew(pr, state.login, seenAt[pr.id])
 
     const sections: { id: SectionId; title: string; prs: Pr[] }[] = [
-      { id: 'fix', title: 'À corriger', prs: state.prs.filter(pr => sectionOf(pr) === 'fix') },
-      { id: 'open', title: 'Ouvertes', prs: state.prs.filter(pr => sectionOf(pr) === 'open') },
-      { id: 'draft', title: 'Drafts', prs: state.prs.filter(pr => sectionOf(pr) === 'draft') },
+      { id: 'fix', title: 'À corriger', prs: listed.filter(pr => sectionOf(pr) === 'fix') },
+      { id: 'open', title: 'Ouvertes', prs: listed.filter(pr => sectionOf(pr) === 'open') },
+      { id: 'draft', title: 'Drafts', prs: listed.filter(pr => sectionOf(pr) === 'draft') },
     ]
 
     const prRow = (pr: Pr) => (
@@ -431,7 +505,7 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column" alignItems="stretch" width="100%" gap="lg">
-        {header}
+        {top}
         {sections
           .filter(section => section.prs.length > 0)
           .map(section => (
