@@ -35,6 +35,8 @@ type Raw = {
   updatedAt: string
   isDraft?: boolean
   reviewDecision?: string | null
+  /** Each reviewer's latest decisive review, as GitHub's latestOpinionatedReviews. */
+  latest?: { author: string; state: string }[]
   reviews?: { id: string; author: string; state: string; body: string; at: string }[]
   comments?: { id: string; author: string; body: string; at: string }[]
   threads?: { id: string; author: string; body: string; path: string; line: number; at: string }[]
@@ -65,6 +67,7 @@ const pr = (raw: Raw) => ({
   reviewDecision: raw.reviewDecision ?? null,
   updatedAt: raw.updatedAt,
   repository: { nameWithOwner: `weeki-io/${raw.repo}` },
+  latestOpinionatedReviews: { nodes: (raw.latest ?? []).map(r => ({ author: { login: r.author }, state: r.state })) },
   reviews: {
     nodes: (raw.reviews ?? []).map(r => ({ id: r.id, author: { login: r.author }, state: r.state, body: r.body, submittedAt: r.at })),
   },
@@ -554,5 +557,44 @@ test('no control character from GitHub reaches the drawn tree, on any surface', 
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Text', text: /boom/ })).toBeDefined()
   expect(stringsOf(await ui.drawn()).filter(text => CONTROLS.test(text))).toEqual([])
+  await ui.unmount()
+})
+
+test('without a reviewDecision, a reviewer\'s latest decisive review sends the PR to À corriger', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const base = { repo: 'weeki_map_api', updatedAt: '2026-11-26T10:00:00Z', reviewDecision: null }
+  const review = (id: string, state: string, at: string) => ({ id, author: 'Yann', state, body: state, at })
+  const gh = {
+    current: ok([
+      // Stacked PR: no decision, one reviewer asks for changes.
+      { ...base, id: 'S1', number: 1, title: 'asks', reviews: [review('a', 'CHANGES_REQUESTED', '2026-11-26T09:00:00Z')], latest: [{ author: 'Yann', state: 'CHANGES_REQUESTED' }] },
+      // Same reviewer approved afterwards: their latest review is the approval.
+      {
+        ...base,
+        id: 'S2',
+        number: 2,
+        title: 'approved later',
+        reviews: [review('b', 'CHANGES_REQUESTED', '2026-11-26T08:00:00Z'), review('c', 'APPROVED', '2026-11-26T09:00:00Z')],
+        latest: [{ author: 'Yann', state: 'APPROVED' }],
+      },
+      // Dismissed request, and a plain comment, do not count.
+      { ...base, id: 'S3', number: 3, title: 'dismissed', latest: [{ author: 'Yann', state: 'DISMISSED' }] },
+      { ...base, id: 'S4', number: 4, title: 'only a comment', reviews: [review('d', 'COMMENTED', '2026-11-26T09:00:00Z')] },
+      // One of two reviewers still asks for changes.
+      { ...base, id: 'S5', number: 5, title: 'split', latest: [{ author: 'Yann', state: 'APPROVED' }, { author: 'Marie', state: 'CHANGES_REQUESTED' }] },
+      // A decision from GitHub is the only rule: an old request does not override an approval.
+      { ...base, id: 'S6', number: 6, title: 'decided', reviewDecision: 'APPROVED', latest: [{ author: 'Marie', state: 'CHANGES_REQUESTED' }] },
+    ]),
+  }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const heads = (await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)
+  expect(heads).toEqual(['À corriger (2)', 'Ouvertes (4)'])
+  const rows = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(key => key?.startsWith('pr:'))
+  expect(new Set(rows.slice(0, 2))).toEqual(new Set(['pr:S1', 'pr:S5']))
+  expect(new Set(rows.slice(2))).toEqual(new Set(['pr:S2', 'pr:S3', 'pr:S4', 'pr:S6']))
   await ui.unmount()
 })

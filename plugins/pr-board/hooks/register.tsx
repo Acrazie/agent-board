@@ -151,8 +151,8 @@ export const register: Register = on => {
     }
 
     const newest = (a: Pr, b: Pr) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-    const toFix = state.prs.filter(pr => pr.reviewDecision === 'CHANGES_REQUESTED').sort(newest)
-    const rest = state.prs.filter(pr => pr.reviewDecision !== 'CHANGES_REQUESTED').sort(newest)
+    const toFix = state.prs.filter(pr => pr.needsChanges).sort(newest)
+    const rest = state.prs.filter(pr => !pr.needsChanges).sort(newest)
 
     const row = (pr: Pr) => (
       <Box key={`row:${pr.id}`} flexDirection="column">

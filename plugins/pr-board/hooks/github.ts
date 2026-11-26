@@ -13,6 +13,7 @@ const QUERY = `query($q: String!) {
       ... on PullRequest {
         id number title url isDraft reviewDecision updatedAt
         repository { nameWithOwner }
+        latestOpinionatedReviews(first: 20) { nodes { state } }
         reviews(last: 20) { nodes { id author { login } state body submittedAt } }
         comments(last: 20) { nodes { id author { login } body createdAt } }
         reviewThreads(first: 30) { ${THREADS} }
@@ -71,6 +72,7 @@ type Raw = {
   reviewDecision: string | null
   updatedAt: string
   repository: { nameWithOwner: string }
+  latestOpinionatedReviews: { nodes: { state: string }[] }
   reviews: { nodes: Node[] }
   comments: { nodes: Node[] }
   reviewThreads: Threads
@@ -117,6 +119,16 @@ const activityOf = (raw: Raw): PrActivity[] => {
   return items
 }
 
+/**
+ * GitHub's `reviewDecision` decides when it has one. Without it (a base branch
+ * that requires no review), a PR needs changes while some reviewer's latest
+ * decisive review (approved, changes requested or dismissed) asks for them.
+ */
+const needsChanges = (raw: Raw) =>
+  raw.reviewDecision !== null
+    ? raw.reviewDecision === 'CHANGES_REQUESTED'
+    : raw.latestOpinionatedReviews.nodes.some(review => review.state === 'CHANGES_REQUESTED')
+
 const newestFirst = (items: PrActivity[]) => items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, ACTIVITY_LIMIT)
 
 /** Runs one `gh api graphql` call and returns its data; throws a readable message on any failure. */
@@ -158,7 +170,7 @@ export const fetchOpenPrs = async (run: Run): Promise<{ login: string; prs: Pr[]
       title: clean(raw.title),
       url: clean(raw.url),
       isDraft: raw.isDraft,
-      reviewDecision: raw.reviewDecision,
+      needsChanges: needsChanges(raw),
       updatedAt: raw.updatedAt,
       activity: newestFirst(items),
     })

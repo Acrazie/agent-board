@@ -18,7 +18,8 @@ export type Pr = {
   title: string
   url: string
   isDraft: boolean
-  reviewDecision: string | null
+  /** Goes in À corriger: GitHub's reviewDecision is CHANGES_REQUESTED or, when it has none, a reviewer's latest decisive review is. */
+  needsChanges: boolean
   updatedAt: string
   /** The 20 most recent reviews and comments, newest first. */
   activity: PrActivity[]

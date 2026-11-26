@@ -3,7 +3,7 @@
 A Claude Code mod that shows your open pull requests in the `weeki-io` organization in a side pane, so you do not have to check GitHub or email for their status.
 
 - **`/prs`** opens the pane. It never opens by itself.
-- **À corriger**, first: PRs where GitHub reports `CHANGES_REQUESTED`. A PR stays there until the reviewer approves or dismisses the request, even after you push.
+- **À corriger**, first: PRs where GitHub reports `CHANGES_REQUESTED`. A PR stays there until the reviewer approves or dismisses the request, even after you push. Where GitHub reports no decision at all (the base branch requires no review, as with stacked PRs), a PR is there when at least one reviewer's latest decisive review (approved, changes requested or dismissed; a plain comment does not count) asks for changes; that reviewer's later approval or dismissal takes it out. A decision from GitHub is always the only rule.
 - **Ouvertes**: every other open PR, marked *draft* or *prête*. A PR is never in both sections. Within a section, the most recently updated comes first.
 - **nouveau** badge: someone other than you reviewed or commented since you last expanded that PR in the pane.
 - Click a PR to expand it: the 20 most recent reviews and comments (author, text, file and line when inline) and a link to GitHub. Expanding clears the badge.
