@@ -263,7 +263,7 @@ export const register: Register = on => {
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
         <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-          {openId === pr.id ? '⌄ Détails' : '› Détails'}
+          {openId === pr.id ? '∨ Détails' : '› Détails'}
         </Button>
         {openId === pr.id && (
           <Box flexDirection="column" paddingLeft={2}>
@@ -289,7 +289,7 @@ export const register: Register = on => {
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
           <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-            {isOpen ? '⌄' : '›'} {shortRepo(repo)} ({prs.length})
+            {isOpen ? '∨' : '›'} {shortRepo(repo)} ({prs.length})
             {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
           </Button>
           {isOpen && (
@@ -309,7 +309,7 @@ export const register: Register = on => {
           .map(section => (
             <Box key={`section:${section.id}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
               <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
-                {`${closed.includes(section.id) ? '›' : '⌄'} ${section.title} ${section.prs.length}`}
+                {`${closed.includes(section.id) ? '›' : '∨'} ${section.title} ${section.prs.length}`}
               </Button>
               {!closed.includes(section.id) && byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
             </Box>

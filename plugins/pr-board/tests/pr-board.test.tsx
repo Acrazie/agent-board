@@ -188,7 +188,7 @@ const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new Reg
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
 const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
-/** The section headers, as drawn: `⌄ Ouvertes 2`. */
+/** The section headers, as drawn: `∨ Ouvertes 2`. */
 const headsOf = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('head:')).map(b => b.text)
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
 const expandAll = async (ui: Ui) => {
@@ -223,7 +223,7 @@ test('sections: À corriger, Ouvertes, Drafts in order; a draft that needs chang
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await headsOf(ui)).toEqual(['⌄ À corriger 2', '⌄ Ouvertes 2', '⌄ Drafts 1'])
+    expect(await headsOf(ui)).toEqual(['∨ À corriger 2', '∨ Ouvertes 2', '∨ Drafts 1'])
 
     await expandAll(ui)
     // Each PR once: À corriger by recency (67, then the older draft), then Ouvertes, then Drafts.
@@ -257,14 +257,14 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const rows = async () => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:')).map(b => b.text)
   // A repository with PRs in two sections appears in each, with only that section's PRs; repositories follow their newest PR.
-  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '⌄ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '∨ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
 
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E', 'pr:A', 'pr:B'])
   await ui.press({ key: repoKey('fix', 'weeki_user_api') })
   await ui.press({ key: repoKey('draft', 'weeki_map_api') })
-  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '› weeki_user_api (1)', '› weeki_atlas_api (1)', '⌄ weeki_map_api (2)', '⌄ weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '› weeki_user_api (1)', '› weeki_atlas_api (1)', '∨ weeki_map_api (2)', '∨ weeki_map_api (1)'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:A', 'pr:B', 'pr:C'])
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:C'])
@@ -276,7 +276,7 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   // Reopening the pane starts from the defaults again.
   await $.command.run(PRS)
   await clock.settle()
-  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '⌄ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '∨ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
   await ui.unmount()
 })
 
@@ -322,7 +322,7 @@ test('sections collapse and expand from their header, start expanded, reset when
   expect(await keysOf(ui, 'repo:open:')).toHaveLength(2)
 
   await ui.press({ key: 'head:open' })
-  expect(await headsOf(ui)).toEqual(['⌄ À corriger 1', '› Ouvertes 2', '⌄ Drafts 1'])
+  expect(await headsOf(ui)).toEqual(['∨ À corriger 1', '› Ouvertes 2', '∨ Drafts 1'])
   expect(await keysOf(ui, 'repo:open:')).toEqual([])
   expect(await keysOf(ui, 'repo:fix:')).toHaveLength(1)
   await ui.press({ key: 'head:fix' })
@@ -331,7 +331,7 @@ test('sections collapse and expand from their header, start expanded, reset when
 
   await $.command.run(PRS)
   await clock.settle()
-  expect(await headsOf(ui)).toEqual(['⌄ À corriger 1', '⌄ Ouvertes 2', '⌄ Drafts 1'])
+  expect(await headsOf(ui)).toEqual(['∨ À corriger 1', '∨ Ouvertes 2', '∨ Drafts 1'])
   // Rows and cards take the pane's width.
   for (const box of await ui.findAll({ type: 'Box' })) {
     if (box.key?.startsWith('section:') || box.key?.startsWith('group:') || box.key?.startsWith('row:')) expect(box.props.width).toBe('100%')
@@ -377,7 +377,7 @@ test('an empty section is hidden', async ($, on) => {
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await headsOf(ui)).toEqual(['⌄ Ouvertes 2'])
+  expect(await headsOf(ui)).toEqual(['∨ Ouvertes 2'])
   expect(await ui.find({ text: /À corriger|Drafts/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -1038,7 +1038,7 @@ test('without a reviewDecision, a reviewer\'s latest decisive review sends the P
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await headsOf(ui)).toEqual(['⌄ À corriger 2', '⌄ Ouvertes 4'])
+  expect(await headsOf(ui)).toEqual(['∨ À corriger 2', '∨ Ouvertes 4'])
   await expandAll(ui)
   const rows = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(key => key?.startsWith('pr:'))
   expect(new Set(rows.slice(0, 2))).toEqual(new Set(['pr:S1', 'pr:S5']))
