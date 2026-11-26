@@ -3,6 +3,7 @@
 A Claude Code mod that shows your open pull requests in the `weeki-io` organization in a side pane, so you do not have to check GitHub or email for their status.
 
 - **`/prs`** opens the pane. It never opens by itself.
+- **Toutes / Cette session**, at the top. *Cette session* keeps only the listed PRs bound to the current Claude desktop session and to every session it started, at any depth (`ccd_pr` bindings, including each session's other bound PRs). In a sub-session it shows only that sub-session's own PRs, never its parent's or siblings'. Sections, grouping, *nouveau* and *Détails* work as in *Toutes*. Each `/prs` opens on *Cette session* when one of those PRs is listed, else on *Toutes*; the choice is not remembered. The family and its bindings are re-read on every refresh. If the desktop app's tools fail, the toggle reads *Sessions indisponibles* and the list stays on *Toutes*. The terminal has no toggle.
 - **À corriger**, first: PRs where GitHub reports `CHANGES_REQUESTED`. A PR stays there until the reviewer approves or dismisses the request, even after you push. Where GitHub reports no decision at all (the base branch requires no review, as with stacked PRs), a PR is there when at least one reviewer's latest decisive review (approved, changes requested or dismissed; a plain comment does not count) asks for changes; that reviewer's later approval or dismissal takes it out. A decision from GitHub is always the only rule.
 - **Ouvertes**: every other ready PR. **Drafts**: every other draft PR. A PR is listed exactly once: a draft that needs changes is in *À corriger*, marked *draft*. An empty section is hidden. Each section has a dim header, its name then its count (`Ouvertes 45`), that collapses or expands it; every section starts expanded.
 - Section headers, repository rows and **Détails** carry a thin chevron on their left, pointing right when collapsed and down when expanded. The terminal, which draws no SVG, shows `›` and `∨` at the start of the label instead.
@@ -32,8 +33,9 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 ## Notes
 
 - **Read only.** The mod runs fixed `gh api graphql` queries (see [`hooks/github.ts`](hooks/github.ts)). The only values that enter a command are opaque GitHub ids and pagination cursors, checked against a strict pattern first; human-written text (titles, bodies, names, paths) never does. Nothing is written to GitHub.
+- **Desktop app, read only.** The mod calls three of the app's tools and nothing else: `ccd_session_mgmt.get_session` (for `self`), `ccd_session_mgmt.list_sessions` (`linked`) and `ccd_pr.get_status` (see [`hooks/sessions.ts`](hooks/sessions.ts)). A session id reaches `get_status` only in the `local_<uuid>` shape. Only open `weeki-io` PRs already in the `gh` list are shown, matched on repository and number.
 - **Review text is display-only.** It is drawn as plain text and never sent to Claude.
-- The only thing stored (`$.store`) is, per PR, when you last opened its details. It is local to this machine; losing it only brings the badges back. Which sections and repositories are expanded is kept in session memory only.
+- The only thing stored (`$.store`) is, per PR, when you last opened its details. It is local to this machine; losing it only brings the badges back. Which sections and repositories are expanded, and the Toutes / Cette session choice, are kept in session memory only.
 - Every open PR is listed: the search is read 50 at a time, following GitHub's cursor. If a page fails, the pane shows the error rather than a shorter list.
 
 ## Develop
