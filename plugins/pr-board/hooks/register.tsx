@@ -14,6 +14,8 @@ const expanded = atom({ plugin: 'pr-board', key: 'expanded' } as const, null as 
 // Repository rows the person opened or closed since the pane opened, by
 // `section:repo`; absent, a row follows its section's default. Session memory only.
 const repoRows = atom({ plugin: 'pr-board', key: 'repoRows' } as const, {} as Record<string, boolean>)
+// Sections the person collapsed since the pane opened; every section starts expanded. Session memory only.
+const closedSections = atom({ plugin: 'pr-board', key: 'closedSections' } as const, [] as string[])
 
 const time = (iso: string) => iso.slice(0, 16).replace('T', ' ')
 const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
@@ -99,7 +101,8 @@ const stamped = (current: Seen, pr: Pr | undefined): Seen => {
 const closeHidden = async ($: EngineInterface, prs: Pr[]) => {
   const openId = await read($, expanded)
   const pr = prs.find(one => one.id === openId)
-  if (openId !== null && !(pr && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo))) await update($, expanded, () => null)
+  const isShown = pr && !(await read($, closedSections)).includes(sectionOf(pr)) && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo)
+  if (openId !== null && !isShown) await update($, expanded, () => null)
 }
 
 let isRefreshing = false
@@ -163,6 +166,13 @@ const toggleRepo = ($: EngineInterface, section: SectionId, repo: string, prIds:
     if (wasOpen && openId !== null && prIds.includes(openId)) await update($, expanded, () => null)
   }).catch(() => undefined)
 
+// Collapsing a section hides the PR expanded in it, as a repository does.
+const toggleSection = ($: EngineInterface, section: SectionId) =>
+  inQueue(async () => {
+    await update($, closedSections, closed => (closed.includes(section) ? closed.filter(id => id !== section) : [...closed, section]))
+    await closeHidden($, (await read($, load)).prs)
+  }).catch(() => undefined)
+
 export const register: Register = on => {
   let isTimerOn = false
 
@@ -174,6 +184,7 @@ export const register: Register = on => {
   on('command.run', { command: 'prs' }, async $ => {
     await inQueue(async () => {
       await update($, repoRows, () => ({}))
+      await update($, closedSections, () => [])
       await closeHidden($, (await read($, load)).prs)
     })
     const { isPlaced } = await $.ui.open({ id: PANE, title: 'Pull requests' })
@@ -233,16 +244,17 @@ export const register: Register = on => {
 
     const now = await $.clock.now()
     const rows = await read($, repoRows)
+    const closed = await read($, closedSections)
     const badged = (pr: Pr) => openId !== pr.id && isNew(pr, state.login, seenAt[pr.id])
 
-    const sections: { id: SectionId; title: string; color?: 'red'; prs: Pr[] }[] = [
-      { id: 'fix', title: 'À corriger', color: 'red', prs: state.prs.filter(pr => sectionOf(pr) === 'fix') },
+    const sections: { id: SectionId; title: string; prs: Pr[] }[] = [
+      { id: 'fix', title: 'À corriger', prs: state.prs.filter(pr => sectionOf(pr) === 'fix') },
       { id: 'open', title: 'Ouvertes', prs: state.prs.filter(pr => sectionOf(pr) === 'open') },
       { id: 'draft', title: 'Drafts', prs: state.prs.filter(pr => sectionOf(pr) === 'draft') },
     ]
 
     const prRow = (pr: Pr) => (
-      <Box key={`row:${pr.id}`} flexDirection="column">
+      <Box key={`row:${pr.id}`} flexDirection="column" alignItems="stretch" width="100%">
         <Text>{pr.title}</Text>
         <Text dimColor>
           #{pr.number}
@@ -250,11 +262,9 @@ export const register: Register = on => {
           {badged(pr) ? ' · ' : ''}
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
-        <Box flexDirection="row">
-          <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-            {openId === pr.id ? '▾ Détails' : '▸ Détails'}
-          </Button>
-        </Box>
+        <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+          {openId === pr.id ? '⌄ Détails' : '› Détails'}
+        </Button>
         {openId === pr.id && (
           <Box flexDirection="column" paddingLeft={2}>
             <Link href={pr.url}>Ouvrir sur GitHub</Link>
@@ -277,15 +287,13 @@ export const register: Register = on => {
     const repoRow = (section: SectionId, repo: string, prs: Pr[]) => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
-        <Box key={`group:${section}:${repo}`} flexDirection="column" gap="md">
-          <Box flexDirection="row">
-            <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-              {isOpen ? '▾' : '▸'} {shortRepo(repo)} ({prs.length})
-              {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
-            </Button>
-          </Box>
+        <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
+          <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+            {isOpen ? '⌄' : '›'} {shortRepo(repo)} ({prs.length})
+            {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
+          </Button>
           {isOpen && (
-            <Box flexDirection="column" gap="md" paddingLeft={2}>
+            <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>
               {prs.map(prRow)}
             </Box>
           )}
@@ -294,16 +302,16 @@ export const register: Register = on => {
     }
 
     return (
-      <Box flexDirection="column" gap="lg">
+      <Box flexDirection="column" alignItems="stretch" width="100%" gap="lg">
         {header}
         {sections
           .filter(section => section.prs.length > 0)
           .map(section => (
-            <Box key={`section:${section.id}`} flexDirection="column" gap="md">
-              <Text bold color={section.color}>
-                {section.title} ({section.prs.length})
-              </Text>
-              {byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
+            <Box key={`section:${section.id}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
+              <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
+                {`${closed.includes(section.id) ? '›' : '⌄'} ${section.title} ${section.prs.length}`}
+              </Button>
+              {!closed.includes(section.id) && byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
             </Box>
           ))}
       </Box>

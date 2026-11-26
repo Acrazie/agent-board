@@ -46,6 +46,8 @@ declare module 'claude-code' {
       expanded: string | null
       /** `section:repo` to whether that repository row is expanded, when the person toggled it since the pane opened. Never stored. */
       repoRows: Record<string, boolean>
+      /** Sections collapsed since the pane opened. Never stored. */
+      closedSections: string[]
     }
   }
 }

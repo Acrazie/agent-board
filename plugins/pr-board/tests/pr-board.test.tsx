@@ -188,10 +188,12 @@ const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new Reg
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
 const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
+/** The section headers, as drawn: `⌄ Ouvertes 2`. */
+const headsOf = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('head:')).map(b => b.text)
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
 const expandAll = async (ui: Ui) => {
   for (const row of await ui.findAll({ type: 'Button' })) {
-    if (row.key?.startsWith('repo:') && row.text.startsWith('▸')) await ui.press({ key: row.key })
+    if (row.key?.startsWith('repo:') && row.text.startsWith('›')) await ui.press({ key: row.key })
   }
 }
 
@@ -221,8 +223,7 @@ test('sections: À corriger, Ouvertes, Drafts in order; a draft that needs chang
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const heads = (await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)
-    expect(heads).toEqual(['À corriger (2)', 'Ouvertes (2)', 'Drafts (1)'])
+    expect(await headsOf(ui)).toEqual(['⌄ À corriger 2', '⌄ Ouvertes 2', '⌄ Drafts 1'])
 
     await expandAll(ui)
     // Each PR once: À corriger by recency (67, then the older draft), then Ouvertes, then Drafts.
@@ -256,14 +257,14 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const rows = async () => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:')).map(b => b.text)
   // A repository with PRs in two sections appears in each, with only that section's PRs; repositories follow their newest PR.
-  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▾ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▸ weeki_map_api (2)', '▸ weeki_map_api (1)'])
+  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '⌄ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
 
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E', 'pr:A', 'pr:B'])
   await ui.press({ key: repoKey('fix', 'weeki_user_api') })
   await ui.press({ key: repoKey('draft', 'weeki_map_api') })
-  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▸ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▾ weeki_map_api (2)', '▾ weeki_map_api (1)'])
+  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '› weeki_user_api (1)', '› weeki_atlas_api (1)', '⌄ weeki_map_api (2)', '⌄ weeki_map_api (1)'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:A', 'pr:B', 'pr:C'])
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:C'])
@@ -275,7 +276,7 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   // Reopening the pane starts from the defaults again.
   await $.command.run(PRS)
   await clock.settle()
-  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▾ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▸ weeki_map_api (2)', '▸ weeki_map_api (1)'])
+  expect(await rows()).toEqual(['⌄ weeki_tiles_api (1)', '⌄ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
   await ui.unmount()
 })
 
@@ -306,6 +307,68 @@ test('a PR shows its full title in a Text, never in a Button and without the rep
   }
 })
 
+test('sections collapse and expand from their header, start expanded, reset when the pane reopens, and never touch the store', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const storedBefore = structuredClone([...w.store])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const head = await ui.find({ type: 'Button', key: 'head:open' })
+  expect(head?.props.plain).toBe(true)
+  expect(head?.props.dimColor).toBe(true)
+  expect(await keysOf(ui, 'repo:open:')).toHaveLength(2)
+
+  await ui.press({ key: 'head:open' })
+  expect(await headsOf(ui)).toEqual(['⌄ À corriger 1', '› Ouvertes 2', '⌄ Drafts 1'])
+  expect(await keysOf(ui, 'repo:open:')).toEqual([])
+  expect(await keysOf(ui, 'repo:fix:')).toHaveLength(1)
+  await ui.press({ key: 'head:fix' })
+  expect(await keysOf(ui, 'pr:')).toEqual([])
+  expect([...w.store]).toEqual(storedBefore)
+
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(await headsOf(ui)).toEqual(['⌄ À corriger 1', '⌄ Ouvertes 2', '⌄ Drafts 1'])
+  // Rows and cards take the pane's width.
+  for (const box of await ui.findAll({ type: 'Box' })) {
+    if (box.key?.startsWith('section:') || box.key?.startsWith('group:') || box.key?.startsWith('row:')) expect(box.props.width).toBe('100%')
+  }
+  await ui.unmount()
+})
+
+test('collapsing a section closes the PR expanded in it: new feedback keeps its badge and is not stamped', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
+  const gh = { current: ok(commented) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: repoKey('open', 'weeki_atlas_api') })
+  await ui.press({ key: 'pr:P7' })
+  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  // Collapsing the section closes it at once, as a repository collapse does.
+  await ui.press({ key: 'head:open' })
+  await ui.press({ key: 'head:open' })
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  await ui.press({ key: 'pr:P7' })
+  await ui.press({ key: 'head:open' })
+
+  await clock.set(Date.parse('2026-11-26T11:31:00Z'))
+  gh.current = ok(commented.map(raw => (raw.id === 'P7' ? lateFeedback(raw) : raw)))
+  await ui.press({ key: 'refresh' })
+  expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
+
+  await ui.press({ key: 'head:open' })
+  expect(await isBadged(ui, 7)).toBe(true)
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('an empty section is hidden', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY.filter(raw => raw.id === 'P7' || raw.id === 'P18')) }
@@ -314,8 +377,8 @@ test('an empty section is hidden', async ($, on) => {
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)).toEqual(['Ouvertes (2)'])
-  expect(await ui.find({ type: 'Text', text: /À corriger|Drafts/ })).toBeUndefined()
+  expect(await headsOf(ui)).toEqual(['⌄ Ouvertes 2'])
+  expect(await ui.find({ text: /À corriger|Drafts/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -330,7 +393,7 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
   const rowText = async () => (await ui.find({ type: 'Button', key: row }))?.text
-  expect(await rowText()).toBe('▸ weeki_atlas_api (1) nouveau')
+  expect(await rowText()).toBe('› weeki_atlas_api (1) nouveau')
   // A collapsed repository without news shows none.
   expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_atlas_frontend') }))?.text).not.toMatch(/nouveau/)
 
@@ -345,7 +408,7 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   expect(await isBadged(ui, 7)).toBe(false)
   await ui.press({ key: 'pr:P7' })
   await ui.press({ key: row })
-  expect(await rowText()).toBe('▸ weeki_atlas_api (1)')
+  expect(await rowText()).toBe('› weeki_atlas_api (1)')
   expect(Object.keys(w.store.get('seen') as object)).toEqual(['P7'])
   await ui.unmount()
 })
@@ -377,7 +440,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
   await clock.settle()
   await clock.advance(120_000)
 
-  expect((await ui.find({ type: 'Button', key: row }))?.text).toBe('▸ weeki_atlas_api (1) nouveau')
+  expect((await ui.find({ type: 'Button', key: row }))?.text).toBe('› weeki_atlas_api (1) nouveau')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
   await ui.press({ key: row })
   expect(await isBadged(ui, 7)).toBe(true)
@@ -409,7 +472,7 @@ for (const [move, before, after] of [
 
     const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:'))
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.text).toBe('▸ weeki_atlas (1) nouveau')
+    expect(rows[0]?.text).toBe('› weeki_atlas (1) nouveau')
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
     await ui.press({ key: rows[0]!.key! })
     expect(await isBadged(ui, 67)).toBe(true)
@@ -975,8 +1038,7 @@ test('without a reviewDecision, a reviewer\'s latest decisive review sends the P
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const heads = (await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)
-  expect(heads).toEqual(['À corriger (2)', 'Ouvertes (4)'])
+  expect(await headsOf(ui)).toEqual(['⌄ À corriger 2', '⌄ Ouvertes 4'])
   await expandAll(ui)
   const rows = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(key => key?.startsWith('pr:'))
   expect(new Set(rows.slice(0, 2))).toEqual(new Set(['pr:S1', 'pr:S5']))
