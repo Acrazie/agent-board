@@ -181,13 +181,18 @@ const world = (on: On, gh: { current: Gh }) => {
 
 const ok = (prs: Raw[]): Answer => ({ exitCode: 0, stdout: stdoutOf(prs), stderr: '' })
 
-type Ui = Pick<Mounted, 'find' | 'findAll' | 'press'>
+// `post` exists only where the surface draws a Client.
+type Ui = Pick<Mounted, 'find' | 'findAll' | 'press' | 'drawn'> & { post?: (data: { toggle: true }, scope: { in: string }) => Promise<void> }
 
 // The dim line under a PR's title starts with its number.
 const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new RegExp(`^#${number} `) })
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
-const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
+/** The keys of the Buttons, or of the repository rows (a Button or, on desktop, a band), that start with `prefix`. */
+const keysOf = async (ui: Ui, prefix: string) =>
+  prefix.startsWith('repo:')
+    ? (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(key => key.startsWith(`line:${prefix}`)).map(key => key.slice('line:'.length))
+    : (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
 type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
 /** A control line read as one string: the chevron as a glyph (from the Svg, or already in the terminal label), the label, then the Texts drawn apart. */
 const lineText = (node: unknown): string[] => {
@@ -206,12 +211,31 @@ const chevronRows = async (ui: Ui) =>
 const rowOf = async (ui: Ui, key: string) => (await chevronRows(ui)).find(row => row.key === key)?.text
 /** The section headers, as drawn: `∨ Ouvertes 2`. */
 const headsOf = async (ui: Ui) => (await chevronRows(ui)).filter(row => row.key.startsWith('head:')).map(row => row.text)
+/**
+ * Toggles a repository row as a person would: its name Button where one is
+ * drawn, or on desktop, a press posted by the Client laid over the band.
+ */
+const toggleRow = async (ui: Ui, key: string) => {
+  if (await ui.find({ type: 'Button', key })) await ui.press({ key })
+  else await ui.post?.({ toggle: true }, { in: `band:${key.slice('repo:'.length)}` })
+}
+/** The node of the drawn tree whose props carry `key`. */
+const drawnByKey = (node: unknown, key: string): { hover?: unknown } | undefined => {
+  if (node === null || typeof node !== 'object') return undefined
+  const { props, children } = node as { props?: { key?: string }; children?: unknown[] }
+  if (props?.key === key) return node as { hover?: unknown }
+  for (const child of children ?? []) {
+    const found = drawnByKey(child, key)
+    if (found) return found
+  }
+  return undefined
+}
 /** The open Détails expansion, if any. */
 const openDetails = async (ui: Ui) => (await ui.findAll({ type: 'Box' })).find(box => box.key?.startsWith('details:'))
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
 const expandAll = async (ui: Ui) => {
   for (const row of await chevronRows(ui)) {
-    if (row.key.startsWith('repo:') && row.text.startsWith('›')) await ui.press({ key: row.key })
+    if (row.key.startsWith('repo:') && row.text.startsWith('›')) await toggleRow(ui, row.key)
   }
 }
 
@@ -278,13 +302,13 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   expect(await rows()).toEqual(['∨ weeki_tiles_api 1', '∨ weeki_user_api 1', '› weeki_atlas_api 1', '› weeki_map_api 2', '› weeki_map_api 1'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
 
-  await ui.press({ key: repoKey('open', 'weeki_map_api') })
+  await toggleRow(ui, repoKey('open', 'weeki_map_api'))
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E', 'pr:A', 'pr:B'])
-  await ui.press({ key: repoKey('fix', 'weeki_user_api') })
-  await ui.press({ key: repoKey('draft', 'weeki_map_api') })
+  await toggleRow(ui, repoKey('fix', 'weeki_user_api'))
+  await toggleRow(ui, repoKey('draft', 'weeki_map_api'))
   expect(await rows()).toEqual(['∨ weeki_tiles_api 1', '› weeki_user_api 1', '› weeki_atlas_api 1', '∨ weeki_map_api 2', '∨ weeki_map_api 1'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:A', 'pr:B', 'pr:C'])
-  await ui.press({ key: repoKey('open', 'weeki_map_api') })
+  await toggleRow(ui, repoKey('open', 'weeki_map_api'))
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:C'])
 
   // Expanded repositories live in session memory: the store is untouched.
@@ -367,7 +391,7 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: repoKey('open', 'weeki_atlas_api') })
+  await toggleRow(ui, repoKey('open', 'weeki_atlas_api'))
   await ui.press({ key: 'pr:P7' })
   expect(await openDetails(ui)).toBeDefined()
   // Collapsing the section closes it at once, as a repository collapse does.
@@ -399,11 +423,12 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     const ui = await $.ui.mount({ ...PANE, surface })
     // Sections expanded, À corriger's repository expanded with its PR's Détails, the other repositories collapsed.
     const elements = await ui.findAll({})
-    const pairs: { alt: unknown; source: unknown; key: string | undefined; label: string }[] = []
-    elements.forEach((element, i) => {
-      if (element.type !== 'Svg') return
-      const button = elements.slice(i + 1).find(next => next.type === 'Button')
-      pairs.push({ alt: element.props.alt, source: element.props.source, key: button?.key, label: button?.text ?? '' })
+    // Each control line: the Svg chevron first, then what carries the label (a Button, or on desktop the repository name's Text).
+    const lines = elements.filter(element => element.type === 'Box' && element.key?.startsWith('line:'))
+    const pairs = lines.map(box => {
+      const [svg, label] = box.children as Drawn[]
+      const labelText = label?.type === 'Button' ? String(label.props?.label ?? '') : lineText(label).join('')
+      return { key: box.key!.slice('line:'.length), alt: svg?.props?.alt, source: svg?.props?.source, svgType: svg?.type, labelType: label?.type, label: labelText }
     })
     expect(pairs.map(pair => [pair.key, pair.alt])).toEqual([
       ['head:fix', 'déplié'],
@@ -416,19 +441,19 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       ['repo:draft:weeki-io/weeki_notebook_api', 'replié'],
     ])
     for (const pair of pairs) {
+      expect(pair.svgType).toBe('Svg')
       expect(pair.source).toMatch(pair.alt === 'déplié' ? /d="M4 6l4 4 4-4"/ : /d="M6 4l4 4-4 4"/)
-      expect(pair.label).not.toMatch(/^[›∨]/)
+      // No glyph, no count and no badge in a label.
+      expect(pair.label).not.toMatch(/^[›∨]|\d|nouveau/)
     }
-    // Each chevron row centres the Svg beside a Box that grows to hold its Button.
-    const rows = elements.filter(element => element.type === 'Box' && element.props.alignItems === 'center')
-    expect(rows).toHaveLength(pairs.length)
-    for (const row of rows) expect(row.props.width).toBe('100%')
+    for (const line of lines) {
+      expect(line.props.width).toBe('100%')
+      expect(line.props.alignItems).toBe('center')
+    }
     // Détails keeps its growing wrapper.
     expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
-    // Counts and badges are drawn apart: no label carries one.
-    for (const pair of pairs) expect(pair.label).not.toMatch(/\d|nouveau/)
-    // Each repository row is a full-width grey band: chevron, a light Button with the name, a spacer, then the count.
-    const bands = elements.filter(element => element.type === 'Box' && element.key?.startsWith('line:repo:'))
+    // Each repository row is a full-width rounded grey band with the count at its right edge.
+    const bands = lines.filter(line => line.key?.startsWith('line:repo:'))
     expect(bands).toHaveLength(4)
     for (const band of bands) {
       expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', alignItems: 'center', flexDirection: 'row' })
@@ -436,14 +461,23 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       expect(band.props).toMatchObject({ borderStyle: 'round', borderColor: '#8E8E9326' })
       expect(band.props.paddingX).toBeDefined()
       const parts = band.children as Drawn[]
-      expect(parts[1]?.props?.plain).toBe(true)
       if (surface === 'desktop') {
-        // Between the name and the count, an empty Client region grows to fill the band and presses too.
-        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client', 'Text'])
-        expect(parts[2]?.props).toMatchObject({ module: 'hooks/band.tsx', flexGrow: 1, height: 1 })
+        // No name Button: the name is a Text, and an empty Client laid over the whole band takes the press.
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Box'])
+        expect(await ui.find({ type: 'Button', key: band.key!.slice('line:'.length) })).toBeUndefined()
+        expect(band.props.position).toBe('relative')
+        // The whole band lightens under the pointer (a hover is drawn beside the props, so it is read from the drawing).
+        expect(drawnByKey(await ui.drawn(), band.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
+        expect(parts[2]?.props?.flexGrow).toBe(1)
+        const cover = parts[4]!
+        expect(cover.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
+        expect(cover.children?.map(child => (child as Drawn).type)).toEqual(['Client'])
+        expect((cover.children?.[0] as Drawn).props).toMatchObject({ module: 'hooks/band.tsx', width: '100%', height: '100%' })
       } else {
         expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
+        expect(parts[1]?.props?.plain).toBe(true)
         expect(parts[2]?.props?.flexGrow).toBe(1)
+        expect(drawnByKey(await ui.drawn(), band.key!)?.hover).toBeUndefined()
       }
     }
     expect(await rowOf(ui, 'repo:open:weeki-io/weeki_atlas_api')).toBe('› weeki_atlas_api 1')
@@ -472,7 +506,7 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
   await ui.unmount()
 })
 
-test('desktop: a press anywhere in a repository band\'s Client region toggles the row, through the same path as its Button', async ($, on) => {
+test('desktop: a press anywhere on a repository band toggles the row through the Client laid over it, the same path as the name Button elsewhere', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
   const gh = { current: ok(commented) }
@@ -487,7 +521,8 @@ test('desktop: a press anywhere in a repository band\'s Client region toggles th
   expect(await ui.findAll({ type: 'Text', in: band })).toEqual([])
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
   const parts = (await ui.findAll({ type: 'Box' })).find(box => box.key === `line:${row}`)?.children as Drawn[]
-  expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client', 'Text', 'Text'])
+  expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Text', 'Box'])
+  expect(await ui.find({ type: 'Button', key: row })).toBeUndefined()
 
   // A left press far right in the region expands the row; a right press does nothing.
   await ui.pointer({ type: 'down', x: 30, y: 0, button: 'right', in: band })
@@ -508,7 +543,7 @@ test('desktop: a press anywhere in a repository band\'s Client region toggles th
   await ui.post({ toggle: true }, { in: band })
   await clock.settle()
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1')
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   expect(await openDetails(ui)).toBeUndefined()
 
   // A post of another shape changes nothing.
@@ -551,17 +586,17 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   // A collapsed repository without news shows none.
   expect((await rowOf(ui, repoKey('open', 'weeki_atlas_frontend')))).not.toMatch(/nouveau/)
 
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   expect(await isBadged(ui, 7)).toBe(true)
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   expect(await rowText()).toMatch(/nouveau/)
   expect(w.store.get('seen')).toEqual({})
 
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   await ui.press({ key: 'pr:P7' })
   expect(await isBadged(ui, 7)).toBe(false)
   await ui.press({ key: 'pr:P7' })
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   expect(await rowText()).toBe('› weeki_atlas_api 1')
   expect(Object.keys(w.store.get('seen') as object)).toEqual(['P7'])
   await ui.unmount()
@@ -583,7 +618,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   await ui.press({ key: 'pr:P7' })
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
 
@@ -596,7 +631,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
 
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
-  await ui.press({ key: row })
+  await toggleRow(ui, row)
   expect(await isBadged(ui, 7)).toBe(true)
   expect(await openDetails(ui)).toBeUndefined()
   await ui.unmount()
@@ -628,7 +663,7 @@ for (const [move, before, after] of [
     expect(rows).toHaveLength(1)
     expect(rows[0]?.text).toBe('› weeki_atlas 1 nouveau')
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
-    await ui.press({ key: rows[0]!.key! })
+    await toggleRow(ui, rows[0]!.key!)
     expect(await isBadged(ui, 67)).toBe(true)
     expect(await openDetails(ui)).toBeUndefined()
     await ui.unmount()
@@ -644,11 +679,11 @@ test('collapsing a repository closes the PR expanded in it, so a refresh never c
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'pr:P67' })
-  await ui.press({ key: repoKey('fix', 'weeki_atlas') })
+  await toggleRow(ui, repoKey('fix', 'weeki_atlas'))
   gh.current = ok(withReview())
   await ui.press({ key: 'refresh' })
   expect((await rowOf(ui, repoKey('fix', 'weeki_atlas')))).toMatch(/nouveau/)
-  await ui.press({ key: repoKey('fix', 'weeki_atlas') })
+  await toggleRow(ui, repoKey('fix', 'weeki_atlas'))
   expect(await openDetails(ui)).toBeUndefined()
   expect(await isBadged(ui, 67)).toBe(true)
   await ui.unmount()

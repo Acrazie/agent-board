@@ -37,6 +37,8 @@ const CHEVRON_RIGHT = chevronSvg('M6 4l4 4-4 4')
 const CHEVRON_DOWN = chevronSvg('M4 6l4 4 4-4')
 // A translucent mid-grey, close to the desktop's own cards on light and dark.
 const BAND = '#8E8E9326'
+// The band under the pointer, a little lighter.
+const BAND_HOVER = '#8E8E9340'
 
 /** À corriger's repositories start expanded, every other one collapsed. */
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
@@ -334,7 +336,8 @@ export const register: Register = on => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-          {/* Off the terminal, a full-width grey band; only its Button is pressed, the native desktop Button keeping its own width. */}
+          {/* Off the terminal, a full-width rounded grey band. On desktop the name is a Text and an empty Client
+              laid over the whole band takes the press (see `ui.message`); elsewhere the name is a Button. */}
           <Box
             key={`line:repo:${section}:${repo}`}
             flexDirection="row"
@@ -342,19 +345,25 @@ export const register: Register = on => {
             columnGap="xs"
             width="100%"
             {...(Svg ? { backgroundColor: BAND, borderStyle: 'round', borderColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
+            {...(Client ? { position: 'relative', hover: { backgroundColor: BAND_HOVER, borderColor: BAND_HOVER } } : {})}
           >
             {chevron(isOpen)}
-            <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-              {`${glyph(isOpen)}${shortRepo(repo)}`}
-            </Button>
             {Client ? (
-              // An empty pressable filler: a press in it posts a toggle (see `ui.message`). It draws nothing, so it has a height.
-              <Client key={`band:${section}:${repo}`} module="./band.tsx" flexGrow={1} height={1} />
-            ) : Svg ? (
-              <Box flexGrow={1} />
-            ) : null}
+              <Text>{shortRepo(repo)}</Text>
+            ) : (
+              <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+                {`${glyph(isOpen)}${shortRepo(repo)}`}
+              </Button>
+            )}
+            {Svg ? <Box flexGrow={1} /> : null}
             <Text dimColor>{prs.length}</Text>
             {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
+            {Client ? (
+              // Last, so it lies over everything before it; it draws nothing, so all of them stay visible.
+              <Box position="absolute" top={0} left={0} width="100%" height="100%">
+                <Client key={`band:${section}:${repo}`} module="./band.tsx" width="100%" height="100%" />
+              </Box>
+            ) : null}
           </Box>
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>

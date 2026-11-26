@@ -1,7 +1,7 @@
 import type { ClientModule } from 'claude-code'
 
-// An empty, pressable filler between a repository band's name and its count, on
-// desktop. A left press anywhere in it, or Return or Space once a click has
+// An empty, pressable region laid over a whole repository band, on desktop; it
+// draws nothing, so the band shows through. A left press anywhere in it, or Return or Space once a click has
 // given it the focus, asks the plugin to toggle the row; the plugin decides what
 // that does.
 const Band: ClientModule = (_props, surface) => {
