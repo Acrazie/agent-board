@@ -16,6 +16,8 @@ const expanded = atom({ plugin: 'pr-board', key: 'expanded' } as const, null as 
 const repoRows = atom({ plugin: 'pr-board', key: 'repoRows' } as const, {} as Record<string, boolean>)
 // Sections the person collapsed since the pane opened; every section starts expanded. Session memory only.
 const closedSections = atom({ plugin: 'pr-board', key: 'closedSections' } as const, [] as string[])
+// Keys of the band Clients that failed on a surface (`ui.fault`); those bands are drawn with their Button instead. Session memory only.
+const faultedBands = atom({ plugin: 'pr-board', key: 'faultedBands' } as const, [] as string[])
 
 const time = (iso: string) => iso.slice(0, 16).replace('T', ' ')
 const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
@@ -232,6 +234,15 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // A band's Client failed: the engine leaves it out and does not draw it again, so the band would no longer press.
+  // Remember it; the next drawing gives that band its Button.
+  on('ui.fault', async ($, e, next) => {
+    if (e.requestId === PANE && e.element.startsWith('band:')) {
+      await update($, faultedBands, keys => (keys.includes(e.element) ? keys : [...keys, e.element]))
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button, Link } = elements
@@ -280,6 +291,9 @@ export const register: Register = on => {
           </Box>
         </Box>
       ) : null
+    const faulted = await read($, faultedBands)
+    /** Whether the control `key` is drawn as a pressable band: desktop, and its Client never failed. */
+    const isBand = (key: string) => Client !== undefined && !faulted.includes(`band:${key}`)
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
@@ -345,7 +359,7 @@ export const register: Register = on => {
           {badged(pr) ? ' · ' : ''}
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
-        {Client
+        {isBand(`pr:${pr.id}`)
           ? band(`pr:${pr.id}`, openId === pr.id, <Text dimColor>Détails</Text>)
           : line(
               `pr:${pr.id}`,
@@ -378,7 +392,7 @@ export const register: Register = on => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-          {Client ? (
+          {isBand(`repo:${section}:${repo}`) ? (
             band(
               `repo:${section}:${repo}`,
               isOpen,
