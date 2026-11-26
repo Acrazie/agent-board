@@ -4,9 +4,11 @@ A Claude Code mod that shows your open pull requests in the `weeki-io` organizat
 
 - **`/prs`** opens the pane. It never opens by itself.
 - **À corriger**, first: PRs where GitHub reports `CHANGES_REQUESTED`. A PR stays there until the reviewer approves or dismisses the request, even after you push. Where GitHub reports no decision at all (the base branch requires no review, as with stacked PRs), a PR is there when at least one reviewer's latest decisive review (approved, changes requested or dismissed; a plain comment does not count) asks for changes; that reviewer's later approval or dismissal takes it out. A decision from GitHub is always the only rule.
-- **Ouvertes**: every other open PR, marked *draft* or *prête*. A PR is never in both sections. Within a section, the most recently updated comes first.
-- **nouveau** badge: someone other than you reviewed or commented since you last expanded that PR in the pane.
-- Click a PR to expand it: the 20 most recent reviews and comments (author, text, file and line when inline) and a link to GitHub. Expanding clears the badge.
+- **Ouvertes**: every other ready PR. **Drafts**: every other draft PR. A PR is listed exactly once: a draft that needs changes is in *À corriger*, marked *draft*. An empty section is hidden.
+- Within a section, PRs are grouped by repository, one row per repository such as `weeki_map_api (2)`. A click expands or collapses it. When the pane opens, the repositories of *À corriger* are expanded and every other one is collapsed; this is not remembered across openings. Repositories come by their most recently updated PR, and PRs newest first.
+- Each PR shows its full title, then a dim line with its number, the time since its last update and its badge (`#53 · mise à jour il y a 2 h · nouveau`), then a **Détails** button.
+- **nouveau** badge: someone other than you reviewed or commented since you last opened that PR's details in the pane. A collapsed repository shows it when one of its PRs has it.
+- **Détails** expands the 20 most recent reviews and comments (author, text, file and line when inline) and a link to GitHub. It is the only thing that clears the badge; expanding a repository does not.
 - The pane refreshes when it opens, every 2 minutes, and with the **Actualiser** button (`r`).
 - If `gh` fails or is logged out, the pane says so. An empty list always means there are no open PRs.
 
@@ -30,7 +32,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 
 - **Read only.** The mod runs fixed `gh api graphql` queries (see [`hooks/github.ts`](hooks/github.ts)). The only values that enter a command are opaque GitHub ids and pagination cursors, checked against a strict pattern first; human-written text (titles, bodies, names, paths) never does. Nothing is written to GitHub.
 - **Review text is display-only.** It is drawn as plain text and never sent to Claude.
-- The only thing stored (`$.store`) is, per PR, when you last expanded it. It is local to this machine; losing it only brings the badges back.
+- The only thing stored (`$.store`) is, per PR, when you last opened its details. It is local to this machine; losing it only brings the badges back. Which repositories are expanded is kept in session memory only.
 - Only the first 50 open PRs of the search are listed.
 
 ## Develop

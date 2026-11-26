@@ -44,6 +44,8 @@ declare module 'claude-code' {
       seen: Record<string, string>
       /** Id of the expanded PR. */
       expanded: string | null
+      /** `section:repo` to whether that repository row is expanded, when the person toggled it since the pane opened. Never stored. */
+      repoRows: Record<string, boolean>
     }
   }
 }

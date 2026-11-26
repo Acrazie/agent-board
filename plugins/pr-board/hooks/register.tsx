@@ -11,9 +11,36 @@ const SEEN_KEY = 'seen'
 const load = atom({ plugin: 'pr-board', key: 'load' } as const, { status: 'idle', isLoading: false, prs: [] } as PrLoad)
 const seen = atom({ plugin: 'pr-board', key: 'seen' } as const, {} as Record<string, string>)
 const expanded = atom({ plugin: 'pr-board', key: 'expanded' } as const, null as string | null)
+// Repository rows the person opened or closed since the pane opened, by
+// `section:repo`; absent, a row follows its section's default. Session memory only.
+const repoRows = atom({ plugin: 'pr-board', key: 'repoRows' } as const, {} as Record<string, boolean>)
 
 const time = (iso: string) => iso.slice(0, 16).replace('T', ' ')
 const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
+
+const ago = (ms: number) => {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (minutes < 1) return "à l'instant"
+  if (minutes < 60) return `il y a ${minutes} min`
+  const hours = Math.floor(minutes / 60)
+  return hours < 24 ? `il y a ${hours} h` : `il y a ${Math.floor(hours / 24)} j`
+}
+
+type SectionId = 'fix' | 'open' | 'draft'
+
+/** À corriger's repositories start expanded, every other one collapsed. */
+const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
+
+const sectionOf = (pr: Pr): SectionId => (pr.needsChanges ? 'fix' : pr.isDraft ? 'draft' : 'open')
+
+/** PRs newest first, grouped by repository in the order of each one's newest PR. */
+const byRepo = (prs: Pr[]) => {
+  const groups = new Map<string, Pr[]>()
+  for (const pr of [...prs].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))) {
+    groups.set(pr.repo, [...(groups.get(pr.repo) ?? []), pr])
+  }
+  return [...groups]
+}
 
 const isNew = (pr: Pr, login: string | undefined, seenAt: string | undefined) =>
   pr.activity.some(item => item.author !== login && (seenAt === undefined || Date.parse(item.at) > Date.parse(seenAt)))
@@ -66,6 +93,15 @@ const stamped = (current: Seen, pr: Pr | undefined): Seen => {
   return pr && at !== undefined ? laterOf(current, { [pr.id]: at }) : current
 }
 
+// The expanded PR counts as open only while its row is open in `prs`: a
+// reopened pane or a PR that changed section can hide it, and a hidden PR must
+// never be stamped as seen. Called inside the queue.
+const closeHidden = async ($: EngineInterface, prs: Pr[]) => {
+  const openId = await read($, expanded)
+  const pr = prs.find(one => one.id === openId)
+  if (openId !== null && !(pr && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo))) await update($, expanded, () => null)
+}
+
 let isRefreshing = false
 
 const refresh = async ($: EngineInterface) => {
@@ -83,6 +119,7 @@ const refresh = async ($: EngineInterface) => {
     await inQueue(async () => {
       if (next.status === 'ok') {
         const { prs } = next
+        await closeHidden($, prs)
         const openId = await read($, expanded)
         // Drop the PRs absent from this fresh result, and count what an
         // expanded PR now shows as seen, before the list is published.
@@ -116,6 +153,16 @@ const toggle = ($: EngineInterface, pr: Pr) =>
     await update($, expanded, () => pr.id)
   }).catch(() => undefined)
 
+// Collapsing a repository also closes the PR expanded in it, so a hidden PR is
+// never stamped as seen by a refresh: only Détails clears a badge.
+const toggleRepo = ($: EngineInterface, section: SectionId, repo: string, prIds: string[]) =>
+  inQueue(async () => {
+    const wasOpen = isRepoOpen(await read($, repoRows), section, repo)
+    await update($, repoRows, rows => ({ ...rows, [`${section}:${repo}`]: !wasOpen }))
+    const openId = await read($, expanded)
+    if (wasOpen && openId !== null && prIds.includes(openId)) await update($, expanded, () => null)
+  }).catch(() => undefined)
+
 export const register: Register = on => {
   let isTimerOn = false
 
@@ -125,6 +172,10 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'prs' }, async $ => {
+    await inQueue(async () => {
+      await update($, repoRows, () => ({}))
+      await closeHidden($, (await read($, load)).prs)
+    })
     const { isPlaced } = await $.ui.open({ id: PANE, title: 'Pull requests' })
     void refresh($)
     if (!isTimerOn) {
@@ -180,16 +231,30 @@ export const register: Register = on => {
       )
     }
 
-    const newest = (a: Pr, b: Pr) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
-    const toFix = state.prs.filter(pr => pr.needsChanges).sort(newest)
-    const rest = state.prs.filter(pr => !pr.needsChanges).sort(newest)
+    const now = await $.clock.now()
+    const rows = await read($, repoRows)
+    const badged = (pr: Pr) => openId !== pr.id && isNew(pr, state.login, seenAt[pr.id])
 
-    const row = (pr: Pr) => (
+    const sections: { id: SectionId; title: string; color?: 'red'; prs: Pr[] }[] = [
+      { id: 'fix', title: 'À corriger', color: 'red', prs: state.prs.filter(pr => sectionOf(pr) === 'fix') },
+      { id: 'open', title: 'Ouvertes', prs: state.prs.filter(pr => sectionOf(pr) === 'open') },
+      { id: 'draft', title: 'Drafts', prs: state.prs.filter(pr => sectionOf(pr) === 'draft') },
+    ]
+
+    const prRow = (pr: Pr) => (
       <Box key={`row:${pr.id}`} flexDirection="column">
-        <Button key={`pr:${pr.id}`} onPress={() => void toggle($, pr)}>
-          {openId === pr.id ? '▾' : '▸'} {shortRepo(pr.repo)}#{pr.number} {pr.title} <Text dimColor>{pr.isDraft ? 'draft' : 'prête'}</Text>
-          {openId !== pr.id && isNew(pr, state.login, seenAt[pr.id]) ? <Text color="yellow"> nouveau</Text> : null}
-        </Button>
+        <Text>{pr.title}</Text>
+        <Text dimColor>
+          #{pr.number}
+          {pr.isDraft ? ' · draft' : ''} · mise à jour {ago(now - Date.parse(pr.updatedAt))}
+          {badged(pr) ? ' · ' : ''}
+          {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
+        </Text>
+        <Box flexDirection="row">
+          <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+            {openId === pr.id ? '▾ Détails' : '▸ Détails'}
+          </Button>
+        </Box>
         {openId === pr.id && (
           <Box flexDirection="column" paddingLeft={2}>
             <Link href={pr.url}>Ouvrir sur GitHub</Link>
@@ -209,23 +274,38 @@ export const register: Register = on => {
       </Box>
     )
 
+    const repoRow = (section: SectionId, repo: string, prs: Pr[]) => {
+      const isOpen = isRepoOpen(rows, section, repo)
+      return (
+        <Box key={`group:${section}:${repo}`} flexDirection="column" gap="md">
+          <Box flexDirection="row">
+            <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+              {isOpen ? '▾' : '▸'} {shortRepo(repo)} ({prs.length})
+              {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
+            </Button>
+          </Box>
+          {isOpen && (
+            <Box flexDirection="column" gap="md" paddingLeft={2}>
+              {prs.map(prRow)}
+            </Box>
+          )}
+        </Box>
+      )
+    }
+
     return (
-      <Box flexDirection="column" gap={1}>
+      <Box flexDirection="column" gap="lg">
         {header}
-        {toFix.length > 0 && (
-          <Box flexDirection="column">
-            <Text bold color="red">
-              À corriger ({toFix.length})
-            </Text>
-            {toFix.map(row)}
-          </Box>
-        )}
-        {rest.length > 0 && (
-          <Box flexDirection="column">
-            <Text bold>Ouvertes ({rest.length})</Text>
-            {rest.map(row)}
-          </Box>
-        )}
+        {sections
+          .filter(section => section.prs.length > 0)
+          .map(section => (
+            <Box key={`section:${section.id}`} flexDirection="column" gap="md">
+              <Text bold color={section.color}>
+                {section.title} ({section.prs.length})
+              </Text>
+              {byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
+            </Box>
+          ))}
       </Box>
     )
   })
