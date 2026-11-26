@@ -1502,8 +1502,10 @@ type Fail = { tool: string; how: 'deny' | 'isError' } | undefined
 const text = (value: unknown) => ({ value: { content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }], isError: false } })
 
 /** Stands for the desktop app's tools as `self` sees them; `fail` breaks one tool. */
-const app = (on: On, self: string, options: { rows?: unknown[]; fail?: { current: Fail } } = {}) => {
+const app = (on: On, self: string, options: { rows?: unknown[]; fail?: { current: Fail }; surfaces?: ('terminal' | 'desktop')[] } = {}) => {
   const calls: McpCall[] = []
+  // The session draws on the desktop app unless the test says otherwise.
+  on('session.surfaces', () => ({ value: options.surfaces ?? ['desktop'] }))
   on('mcp.call', (_, e) => {
     calls.push(e)
     const fail = options.fail?.current
@@ -1677,18 +1679,77 @@ test('a session id that is not local_<uuid> never reaches get_status, nor do the
   await ui.unmount()
 })
 
-test('the terminal has no toggle and stays on Toutes', async ($, on) => {
+test('a terminal-only session has no tabs and stays on Toutes, even where the app would answer: the list, the hidden-PR check and the presses agree', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
-  world(on, { current: ok(FAMILY_LIST) })
-  app(on, PARENT)
+  const w = world(on, { current: ok(FAMILY_LIST) })
+  const calls = app(on, PARENT, { surfaces: ['terminal'] })
   await $.command.run(PRS)
   await clock.settle()
+  // No surface of the desktop app: its tools are not even asked.
+  expect(calls).toEqual([])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Button', key: 'mode:session' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'mode:all' })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeUndefined()
   expect(await listedOf(ui)).toEqual(ALL)
+  // A PR outside the family stays expanded across a refresh: nothing hides it behind the list's back.
+  await pressControl(ui, 'pr:P67')
+  await pressControl(ui, 'refresh')
+  expect(await openDetails(ui)).toBeDefined()
+  expect(calls).toEqual([])
+  await ui.unmount()
+})
+
+test('a refresh whose app call fails in Cette session goes back to Toutes, and stays there when the app answers again', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  const fail = { current: undefined as Fail }
+  app(on, PARENT, { fail })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await modeOf(ui)).toBe('session')
+  fail.current = { tool: 'get_status', how: 'deny' }
+  await pressControl(ui, 'refresh')
+  // Toutes is the active tab, never a pane with no active tab.
+  const tabs = (await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('tab:') && box.key !== 'tab:refresh')
+  expect(tabs.map(box => [box.key, box.props.backgroundColor])).toEqual([
+    ['tab:mode:all', '#8E8E9326'],
+    ['tab:sessions', undefined],
+  ])
+  expect(await listedOf(ui)).toEqual(ALL)
+
+  fail.current = undefined
+  await pressControl(ui, 'refresh')
+  expect(await modeOf(ui)).toBe('all')
+  expect(await listedOf(ui)).toEqual(ALL)
+  // The person can choose Cette session again.
+  await pressControl(ui, 'mode:session')
+  expect(await modeOf(ui)).toBe('session')
+  await ui.unmount()
+})
+
+test('a tab pressed while the opening refresh runs is kept when that refresh lands', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const w = world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT)
+  // A first opening, so the tabs are drawn with a family already read.
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await modeOf(ui)).toBe('session')
+
+  // The pane opens again; gh has not answered when the person picks Toutes.
+  const answer = w.hold('gh')
+  const reopen = $.command.run(PRS)
+  await answer.reached
+  await pressControl(ui, 'mode:all')
+  answer.open()
+  await reopen
+  await clock.settle()
+  expect(await modeOf(ui)).toBe('all')
   await ui.unmount()
 })
 

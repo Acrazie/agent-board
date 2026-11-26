@@ -38,8 +38,11 @@ export type PrLoad = {
 
 /** What the desktop app says is bound to this session and every session it started. */
 export type FamilyLoad = {
-  /** `idle` until the first read; `unavailable` when any app call failed or the app's tools are absent. */
-  status: 'idle' | 'ok' | 'unavailable'
+  /**
+   * `idle` until the first read; `absent` when the session draws on no surface of the desktop app (no tabs);
+   * `unavailable` when any app call failed.
+   */
+  status: 'idle' | 'ok' | 'absent' | 'unavailable'
   /** The bound PRs as `owner/name#number`, lower case. */
   prs: string[]
 }

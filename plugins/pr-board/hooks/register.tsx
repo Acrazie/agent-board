@@ -65,11 +65,19 @@ const sectionOf = (pr: Pr): SectionId => (pr.needsChanges ? 'fix' : pr.isDraft ?
 
 const isBound = (bound: FamilyLoad, pr: Pr) => bound.prs.includes(prKey(pr.repo, pr.number))
 
-/** The PRs the list shows: all of them, or under Cette session only those bound to the session's family. */
-const filterPrs = (prs: Pr[], current: 'all' | 'session', bound: FamilyLoad) =>
-  current === 'session' && bound.status === 'ok' ? prs.filter(pr => isBound(bound, pr)) : prs
+/**
+ * The one mode rule, for the drawing, the hidden-PR check and the presses alike: Cette session only while it is the
+ * chosen mode and the family was read; Toutes whenever the tabs are not shown (`absent`) or the app failed.
+ */
+const effectiveMode = (chosen: 'all' | 'session', bound: FamilyLoad) => (chosen === 'session' && bound.status === 'ok' ? 'session' : 'all')
 
-const shownPrs = async ($: EngineInterface, prs: Pr[]) => filterPrs(prs, await read($, mode), await read($, family))
+/** The PRs the list shows: all of them, or under Cette session only those bound to the session's family. */
+const filterPrs = (prs: Pr[], current: 'all' | 'session', bound: FamilyLoad) => (current === 'session' ? prs.filter(pr => isBound(bound, pr)) : prs)
+
+const shownPrs = async ($: EngineInterface, prs: Pr[]) => {
+  const bound = await read($, family)
+  return filterPrs(prs, effectiveMode(await read($, mode), bound), bound)
+}
 
 /** PRs newest first, grouped by repository in the order of each one's newest PR. */
 const byRepo = (prs: Pr[]) => {
@@ -146,6 +154,8 @@ let isRefreshing = false
 let isOpening = false
 
 const readFamily = async ($: EngineInterface): Promise<FamilyLoad> => {
+  // The app's tools exist only where the session draws on one of its surfaces; a terminal-only session has no tabs.
+  if (!(await $.session.surfaces().catch(() => [] as const)).some(surface => surface !== 'terminal')) return { status: 'absent', prs: [] }
   try {
     return { status: 'ok', prs: await readFamilyPrs((server, tool, args) => $.mcp.call(server, tool, args)) }
   } catch {
@@ -169,6 +179,8 @@ const refresh = async ($: EngineInterface) => {
     const nextFamily = await bound
     await inQueue(async () => {
       await update($, family, () => nextFamily)
+      // Without the family the pane is on Toutes, and stays there when the app answers again: no silent re-filter.
+      if (nextFamily.status !== 'ok') await update($, mode, () => 'all')
       if (isOpening) {
         isOpening = false
         // The pane opens on Cette session when one of the family's bound PRs is in the list.
@@ -222,11 +234,14 @@ const toggleRepo = ($: EngineInterface, section: SectionId, repo: string, prIds:
   }).catch(() => undefined)
 
 // Leaving Toutes hides the PR expanded outside the family, as collapsing does.
-const setMode = ($: EngineInterface, next: 'all' | 'session') =>
-  inQueue(async () => {
+const setMode = ($: EngineInterface, next: 'all' | 'session') => {
+  // The person's choice wins over the mode the opening refresh would pick.
+  isOpening = false
+  return inQueue(async () => {
     await update($, mode, () => next)
     await closeHidden($, (await read($, load)).prs)
   }).catch(() => undefined)
+}
 
 // Collapsing a section hides the PR expanded in it, as a repository does.
 const toggleSection = ($: EngineInterface, section: SectionId) =>
@@ -271,9 +286,9 @@ export const register: Register = on => {
       const prs = await shownPrs($, (await read($, load)).prs)
       if (e.element === 'band:refresh') void refresh($)
       else if (e.element === 'band:mode:all' || e.element === 'band:mode:session') {
-        // Cette session presses only while the app answered; otherwise its tab is not drawn.
+        // Cette session presses only while its tab is drawn: not without the app's surfaces or while the app fails.
         const id = e.element.slice('band:mode:'.length) as 'all' | 'session'
-        if (id === 'all' || (await read($, family)).status !== 'unavailable') void setMode($, id)
+        if (id === 'all' || !['absent', 'unavailable'].includes((await read($, family)).status)) void setMode($, id)
       } else if (e.element.startsWith('band:repo:')) {
         const rest = e.element.slice('band:repo:'.length)
         const cut = rest.indexOf(':')
@@ -356,10 +371,10 @@ export const register: Register = on => {
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
     const bound = await read($, family)
-    // The terminal has none of the desktop app's tools: no toggle, and the list stays on Toutes.
-    const hasToggle = e.surface !== 'terminal'
-    const current = hasToggle ? await read($, mode) : 'all'
-    const isFiltered = current === 'session' && bound.status === 'ok'
+    // A session on no surface of the desktop app has none of its tools: no tabs, and the list stays on Toutes.
+    const hasToggle = bound.status !== 'absent'
+    const current = effectiveMode(await read($, mode), bound)
+    const isFiltered = current === 'session'
 
     // One full-width row at the top: the Toutes and Cette session tabs, then the time of the last answer and the refresh icon.
     const countAll = state.status === 'ok' ? state.prs.length : undefined
