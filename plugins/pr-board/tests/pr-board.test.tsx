@@ -38,7 +38,23 @@ type Raw = {
   reviews?: { id: string; author: string; state: string; body: string; at: string }[]
   comments?: { id: string; author: string; body: string; at: string }[]
   threads?: { id: string; author: string; body: string; path: string; line: number; at: string }[]
+  /** Threads GitHub reports beyond the first page. */
+  moreThreads?: string
 }
+
+type Thread = NonNullable<Raw['threads']>[number]
+
+const threadNodes = (threads: Thread[]) =>
+  threads.map(t => ({
+    comments: { nodes: [{ id: t.id, author: { login: t.author }, body: t.body, path: t.path, line: t.line, originalLine: t.line, createdAt: t.at }] },
+  }))
+
+const pageOf = (threads: Thread[], next?: string) => ({
+  pageInfo: { hasNextPage: next !== undefined, endCursor: next ?? null },
+  nodes: threadNodes(threads),
+})
+
+const threadsStdout = (threads: Thread[], next?: string) => JSON.stringify({ data: { node: { reviewThreads: pageOf(threads, next) } } })
 
 const pr = (raw: Raw) => ({
   id: raw.id,
@@ -53,11 +69,7 @@ const pr = (raw: Raw) => ({
     nodes: (raw.reviews ?? []).map(r => ({ id: r.id, author: { login: r.author }, state: r.state, body: r.body, submittedAt: r.at })),
   },
   comments: { nodes: (raw.comments ?? []).map(c => ({ id: c.id, author: { login: c.author }, body: c.body, createdAt: c.at })) },
-  reviewThreads: {
-    nodes: (raw.threads ?? []).map(t => ({
-      comments: { nodes: [{ id: t.id, author: { login: t.author }, body: t.body, path: t.path, line: t.line, originalLine: t.line, createdAt: t.at }] },
-    })),
-  },
+  reviewThreads: pageOf(raw.threads ?? [], raw.moreThreads),
 })
 
 const stdoutOf = (prs: Raw[]) => JSON.stringify({ data: { viewer: { login: ME }, search: { nodes: prs.map(pr) } } })
@@ -87,7 +99,8 @@ const TODAY: Raw[] = [
   },
 ]
 
-type Gh = { exitCode: number; stdout: string; stderr: string } | Error
+type Answer = { exitCode: number; stdout: string; stderr: string } | Error
+type Gh = Answer | ((argv: readonly string[]) => Answer)
 // Set to hold gh's next answer until the test calls it.
 const hold: { release?: () => void; gate?: Promise<void> } = {}
 
@@ -104,7 +117,8 @@ const world = (on: On, gh: { current: Gh }) => {
   on('process.run', async (_, e) => {
     calls.push(e.argv)
     await hold.gate
-    return gh.current instanceof Error ? { deny: gh.current.message } : { value: { ...gh.current, isStdoutTruncated: false, isStderrTruncated: false } }
+    const answer = typeof gh.current === 'function' ? gh.current(e.argv) : gh.current
+    return answer instanceof Error ? { deny: answer.message } : { value: { ...answer, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
   on('store.set', (_, e) => {
@@ -123,7 +137,7 @@ const world = (on: On, gh: { current: Gh }) => {
   return { calls, store, opened, forbidden }
 }
 
-const ok = (prs: Raw[]): Gh => ({ exitCode: 0, stdout: stdoutOf(prs), stderr: '' })
+const ok = (prs: Raw[]): Answer => ({ exitCode: 0, stdout: stdoutOf(prs), stderr: '' })
 
 test('/prs opens the pane and loads with one fixed read-only gh call', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
@@ -439,5 +453,60 @@ test('a click during a refresh and the refresh both keep their seen changes', as
   expect(Object.keys(stored).sort()).toEqual(['P67', 'P7'])
   // P7 is expanded and has no activity: counted seen as of the refresh that just showed it.
   expect(stored.P7).toBe('2026-11-26T11:02:00.000Z')
+  await ui.unmount()
+})
+
+test('replies on older threads are found by following GitHub pageInfo, with fixed argv', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T12:00:00Z') })
+  const first: Raw = {
+    id: 'PT',
+    number: 3,
+    title: 'many threads',
+    repo: 'weeki_map_api',
+    updatedAt: '2026-11-26T11:00:00Z',
+    threads: [{ id: 't-first', author: 'Yann', body: 'on the first page', path: 'a.ts', line: 1, at: '2026-11-26T09:00:00Z' }],
+    moreThreads: 'CUR1',
+  }
+  const pages: Record<string, string> = {
+    CUR1: threadsStdout([{ id: 't-old', author: 'Yann', body: 'reply on an older thread', path: 'b.ts', line: 2, at: '2026-11-26T11:20:00Z' }], 'CUR2'),
+    CUR2: threadsStdout([{ id: 't-last', author: 'Yann', body: 'newest of all', path: 'c.ts', line: 3, at: '2026-11-26T11:50:00Z' }]),
+  }
+  const gh: { current: Gh } = {
+    current: argv => {
+      const cursor = argv.find(a => a.startsWith('cursor='))?.slice(7)
+      return cursor === undefined ? ok([first]) : { exitCode: 0, stdout: pages[cursor] ?? '', stderr: '' }
+    },
+  }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  // One search, then one call per page, each following the cursor GitHub gave.
+  expect(w.calls).toHaveLength(3)
+  expect(w.calls[0]).toEqual([...FETCH_ARGV])
+  for (const [call, cursor] of [[w.calls[1], 'CUR1'], [w.calls[2], 'CUR2']] as const) {
+    expect(call?.slice(0, 5)).toEqual(['gh', 'api', 'graphql', '-f', expect.stringMatching(/^query=query\(\$id: ID!, \$cursor: String!\)/)])
+    expect(call?.slice(5)).toEqual(['-f', 'id=PT', '-f', `cursor=${cursor}`])
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Button', key: 'pr:PT' }))?.text).toMatch(/nouveau/)
+  await ui.press({ key: 'pr:PT' })
+  const bodies = (await ui.findAll({ type: 'Text', text: /^(on the first page|reply on an older thread|newest of all)$/ })).map(t => t.text)
+  expect(bodies).toEqual(['newest of all', 'reply on an older thread', 'on the first page'])
+  await ui.unmount()
+})
+
+test('a cursor that is not an opaque GitHub id is refused before any command runs', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T12:00:00Z') })
+  const evil: Raw = { id: 'PT', number: 3, title: 't', repo: 'weeki_map_api', updatedAt: '2026-11-26T11:00:00Z', moreThreads: 'x"; rm -rf ~ #' }
+  const gh = { current: ok([evil]) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  expect(w.calls).toHaveLength(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   await ui.unmount()
 })

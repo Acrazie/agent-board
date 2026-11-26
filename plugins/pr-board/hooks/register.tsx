@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Pr, PrLoad } from '../types'
-import { FETCH_ARGV, parseSearch } from './github'
+import { fetchOpenPrs } from './github'
 
 const PANE = 'pr-board'
 const REFRESH_MS = 2 * 60 * 1000
@@ -52,12 +52,7 @@ const refresh = async ($: EngineInterface) => {
     await update($, load, (state): PrLoad => ({ ...state, isLoading: true }))
     let next: PrLoad
     try {
-      const run = await $.process.run([...FETCH_ARGV], { timeoutMs: 30_000 })
-      if (run.exitCode !== 0) {
-        const reason = run.stderr.trim().split('\n')[0] || `code ${run.exitCode}`
-        throw new Error(`gh a échoué : ${reason}`)
-      }
-      const { login, prs } = parseSearch(run.stdout)
+      const { login, prs } = await fetchOpenPrs(argv => $.process.run([...argv], { timeoutMs: 30_000 }))
       next = { status: 'ok', isLoading: false, prs, login, fetchedAt: new Date(await $.clock.now()).toISOString() }
     } catch (error) {
       next = { status: 'error', isLoading: false, prs: [], error: error instanceof Error ? error.message : String(error) }
