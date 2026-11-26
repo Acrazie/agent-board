@@ -188,12 +188,28 @@ const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new Reg
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
 const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
+/**
+ * Each keyed Button with its chevron read as a glyph: from the Svg drawn just
+ * before it (desktop, vscode, mobile), or from its own label (terminal).
+ */
+const chevronRows = async (ui: Ui) => {
+  const rows: { key: string; text: string }[] = []
+  let alt: unknown
+  for (const element of await ui.findAll({})) {
+    if (element.type === 'Svg') alt = element.props.alt
+    if (element.type !== 'Button' || element.key === undefined) continue
+    rows.push({ key: element.key, text: alt === undefined ? element.text : `${alt === 'déplié' ? '∨' : '›'} ${element.text}` })
+    alt = undefined
+  }
+  return rows
+}
+const rowOf = async (ui: Ui, key: string) => (await chevronRows(ui)).find(row => row.key === key)?.text
 /** The section headers, as drawn: `∨ Ouvertes 2`. */
-const headsOf = async (ui: Ui) => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('head:')).map(b => b.text)
+const headsOf = async (ui: Ui) => (await chevronRows(ui)).filter(row => row.key.startsWith('head:')).map(row => row.text)
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
 const expandAll = async (ui: Ui) => {
-  for (const row of await ui.findAll({ type: 'Button' })) {
-    if (row.key?.startsWith('repo:') && row.text.startsWith('›')) await ui.press({ key: row.key })
+  for (const row of await chevronRows(ui)) {
+    if (row.key.startsWith('repo:') && row.text.startsWith('›')) await ui.press({ key: row.key })
   }
 }
 
@@ -255,7 +271,7 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   const storedBefore = structuredClone([...w.store])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const rows = async () => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:')).map(b => b.text)
+  const rows = async () => (await chevronRows(ui)).filter(row => row.key.startsWith('repo:')).map(row => row.text)
   // A repository with PRs in two sections appears in each, with only that section's PRs; repositories follow their newest PR.
   expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '∨ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
@@ -369,6 +385,60 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
   await ui.unmount()
 })
 
+test('chevrons: an Svg left of each Button where the surface draws Svg, a text glyph in the label on the terminal', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['vscode', 'mobile', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    // Sections expanded, À corriger's repository expanded with its PR's Détails, the other repositories collapsed.
+    const elements = await ui.findAll({})
+    const pairs: { alt: unknown; source: unknown; key: string | undefined; label: string }[] = []
+    elements.forEach((element, i) => {
+      if (element.type !== 'Svg') return
+      const button = elements.slice(i + 1).find(next => next.type === 'Button')
+      pairs.push({ alt: element.props.alt, source: element.props.source, key: button?.key, label: button?.text ?? '' })
+    })
+    expect(pairs.map(pair => [pair.key, pair.alt])).toEqual([
+      ['head:fix', 'déplié'],
+      ['repo:fix:weeki-io/weeki_atlas', 'déplié'],
+      ['pr:P67', 'replié'],
+      ['head:open', 'déplié'],
+      ['repo:open:weeki-io/weeki_atlas_api', 'replié'],
+      ['repo:open:weeki-io/weeki_atlas_frontend', 'replié'],
+      ['head:draft', 'déplié'],
+      ['repo:draft:weeki-io/weeki_notebook_api', 'replié'],
+    ])
+    for (const pair of pairs) {
+      expect(pair.source).toMatch(pair.alt === 'déplié' ? /d="M4 6l4 4 4-4"/ : /d="M6 4l4 4-4 4"/)
+      expect(pair.label).not.toMatch(/^[›∨]/)
+    }
+    // Each chevron row centres the Svg beside a Box that grows to hold its Button.
+    const rows = elements.filter(element => element.type === 'Box' && element.props.alignItems === 'center')
+    expect(rows).toHaveLength(pairs.length)
+    for (const row of rows) expect(row.props.width).toBe('100%')
+    expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(pairs.length)
+    if (surface === 'desktop') {
+      // Opening Détails turns its chevron down; the label stays the same.
+      await ui.press({ key: 'pr:P67' })
+      expect(await rowOf(ui, 'pr:P67')).toBe('∨ Détails')
+      expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('Détails')
+    }
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.findAll({ type: 'Svg' })).toEqual([])
+  expect((await ui.find({ type: 'Button', key: 'head:open' }))?.text).toBe('∨ Ouvertes 2')
+  expect((await ui.find({ type: 'Button', key: 'repo:open:weeki-io/weeki_atlas_api' }))?.text).toBe('› weeki_atlas_api (1)')
+  // Détails was opened on desktop just before.
+  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('∨ Détails')
+  await ui.unmount()
+})
+
 test('an empty section is hidden', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY.filter(raw => raw.id === 'P7' || raw.id === 'P18')) }
@@ -392,7 +462,7 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
-  const rowText = async () => (await ui.find({ type: 'Button', key: row }))?.text
+  const rowText = () => rowOf(ui, row)
   expect(await rowText()).toBe('› weeki_atlas_api (1) nouveau')
   // A collapsed repository without news shows none.
   expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_atlas_frontend') }))?.text).not.toMatch(/nouveau/)
@@ -440,7 +510,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
   await clock.settle()
   await clock.advance(120_000)
 
-  expect((await ui.find({ type: 'Button', key: row }))?.text).toBe('› weeki_atlas_api (1) nouveau')
+  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api (1) nouveau')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
   await ui.press({ key: row })
   expect(await isBadged(ui, 7)).toBe(true)
@@ -470,7 +540,7 @@ for (const [move, before, after] of [
     gh.current = ok([lateFeedback(start, after)])
     await ui.press({ key: 'refresh' })
 
-    const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:'))
+    const rows = (await chevronRows(ui)).filter(row => row.key.startsWith('repo:'))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.text).toBe('› weeki_atlas (1) nouveau')
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')

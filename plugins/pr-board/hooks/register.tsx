@@ -30,6 +30,12 @@ const ago = (ms: number) => {
 
 type SectionId = 'fix' | 'open' | 'draft'
 
+// A thin chevron in a fixed mid-grey that reads on light and dark: right when collapsed, down when expanded.
+const chevronSvg = (path: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${path}" fill="none" stroke="#8E8E93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+const CHEVRON_RIGHT = chevronSvg('M6 4l4 4-4 4')
+const CHEVRON_DOWN = chevronSvg('M4 6l4 4 4-4')
+
 /** À corriger's repositories start expanded, every other one collapsed. */
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
 
@@ -197,7 +203,23 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = elements
+    // Where the surface draws Svg, the chevron sits left of the Button; the terminal keeps a text glyph in the label.
+    // `resolve` completes every table with every name (a missing one draws a fragment), so the surface decides.
+    const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
+    const glyph = (isOpen: boolean) => (Svg ? '' : isOpen ? '∨ ' : '› ')
+    const withChevron = (isOpen: boolean, button: ReturnType<typeof Button>) =>
+      Svg ? (
+        <Box flexDirection="row" alignItems="center" columnGap="xs" width="100%">
+          <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} />
+          <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
+            {button}
+          </Box>
+        </Box>
+      ) : (
+        button
+      )
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
@@ -262,9 +284,12 @@ export const register: Register = on => {
           {badged(pr) ? ' · ' : ''}
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
-        <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-          {openId === pr.id ? '∨ Détails' : '› Détails'}
-        </Button>
+        {withChevron(
+          openId === pr.id,
+          <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+            {`${glyph(openId === pr.id)}Détails`}
+          </Button>,
+        )}
         {openId === pr.id && (
           <Box flexDirection="column" paddingLeft={2}>
             <Link href={pr.url}>Ouvrir sur GitHub</Link>
@@ -288,10 +313,13 @@ export const register: Register = on => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-          <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-            {isOpen ? '∨' : '›'} {shortRepo(repo)} ({prs.length})
-            {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
-          </Button>
+          {withChevron(
+            isOpen,
+            <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+              {`${glyph(isOpen)}${shortRepo(repo)} (${prs.length})`}
+              {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
+            </Button>,
+          )}
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>
               {prs.map(prRow)}
@@ -308,9 +336,12 @@ export const register: Register = on => {
           .filter(section => section.prs.length > 0)
           .map(section => (
             <Box key={`section:${section.id}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-              <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
-                {`${closed.includes(section.id) ? '›' : '∨'} ${section.title} ${section.prs.length}`}
-              </Button>
+              {withChevron(
+                !closed.includes(section.id),
+                <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
+                  {`${glyph(!closed.includes(section.id))}${section.title} ${section.prs.length}`}
+                </Button>,
+              )}
               {!closed.includes(section.id) && byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
             </Box>
           ))}
