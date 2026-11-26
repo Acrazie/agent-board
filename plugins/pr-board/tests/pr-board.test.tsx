@@ -123,8 +123,13 @@ const expectFixedArgv = (calls: readonly (readonly string[])[]) => {
 
 type Answer = { exitCode: number; stdout: string; stderr: string } | Error
 type Gh = Answer | ((argv: readonly string[]) => Answer)
-// Set to hold gh's next answer until the test calls it.
-const hold: { release?: () => void; gate?: Promise<void> } = {}
+// A wait the test opens by hand; `reached` says the code under test is at it.
+const gate = () => {
+  let open!: () => void
+  let reach!: () => void
+  return { wait: new Promise<void>(resolve => (open = resolve)), reached: new Promise<void>(resolve => (reach = resolve)), open, reach }
+}
+type Gate = ReturnType<typeof gate>
 
 // Stands for the engine beneath the plugin: gh answers `gh.current`, the store is a map.
 const world = (on: On, gh: { current: Gh }) => {
@@ -132,18 +137,31 @@ const world = (on: On, gh: { current: Gh }) => {
   const store = new Map<string, unknown>()
   const opened: string[] = []
   const forbidden: string[] = []
+  // The next gh call, or the next store write, waits for its gate; one world's gates never reach another test.
+  const gates: { gh?: Gate; set?: Gate } = {}
+  const down = { get: false, set: false }
   const tripwire = (name: string) => () => {
     forbidden.push(name)
     throw new Error(`${name} fired`)
   }
+  const pass = async (which: 'gh' | 'set') => {
+    const held = gates[which]
+    gates[which] = undefined
+    if (held) {
+      held.reach()
+      await held.wait
+    }
+  }
   on('process.run', async (_, e) => {
     calls.push(e.argv)
-    await hold.gate
+    await pass('gh')
     const answer = typeof gh.current === 'function' ? gh.current(e.argv) : gh.current
     return answer instanceof Error ? { deny: answer.message } : { value: { ...answer, isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('store.get', (_, e) => ({ value: store.get(e.key) }))
-  on('store.set', (_, e) => {
+  on('store.get', (_, e) => (down.get ? { deny: 'store down' } : { value: store.get(e.key) }))
+  on('store.set', async (_, e) => {
+    await pass('set')
+    if (down.set) return { deny: 'store down' }
     store.set(e.key, e.value)
     return { value: undefined }
   })
@@ -156,7 +174,8 @@ const world = (on: On, gh: { current: Gh }) => {
   on('prompt.compose', tripwire('prompt.compose'))
   on('model.complete', tripwire('model.complete'))
   on('model.fork', tripwire('model.fork'))
-  return { calls, store, opened, forbidden }
+  const hold = (which: 'gh' | 'set') => (gates[which] = gate())
+  return { calls, store, opened, forbidden, hold, down }
 }
 
 const ok = (prs: Raw[]): Answer => ({ exitCode: 0, stdout: stdoutOf(prs), stderr: '' })
@@ -391,7 +410,7 @@ test('the pane does not open and gh does not run at session start', async ($, on
 test('a refresh keeps the list and the open expansion drawn, and says so in the header only', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY) }
-  world(on, gh)
+  const w = world(on, gh)
   await $.command.run(PRS)
   await clock.settle()
 
@@ -400,52 +419,77 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
 
   // The 2-minute tick starts a refresh that gh has not answered yet.
-  hold.gate = new Promise<void>(resolve => {
-    hold.release = resolve
-  })
+  const answer = w.hold('gh')
   const tick = clock.advance(120_000)
+  await answer.reached
   await clock.settle()
-  const during = ui
-  expect(await during.find({ type: 'Text', text: /actualisation/ })).toBeDefined()
-  expect(await during.find({ type: 'Text', text: /Chargement des PR/ })).toBeUndefined()
-  expect(await during.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
-  expect(await during.find({ type: 'Text', text: CRAFTED })).toBeDefined()
-  expect(await during.find({ type: 'Link' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Chargement des PR/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
+  expect(await ui.find({ type: 'Link' })).toBeDefined()
 
-  hold.release?.()
-  hold.gate = undefined
+  answer.open()
   await tick
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
   await ui.unmount()
 })
 
-test('expanding stamps what the pane shows, not the clock: a review posted before the click but after the fetch stays new', async ($, on) => {
+const withReview = (): Raw[] => [
+  {
+    ...TODAY[0]!,
+    reviews: [...TODAY[0]!.reviews!, { id: 'R2', author: 'YannAndreWeeki', state: 'COMMENTED', body: 'late review', at: '2026-11-26T11:30:00Z' }],
+  },
+  ...TODAY.slice(1),
+]
+
+test('expanding stamps what the pane shows, not the clock: a review posted between the fetch and the click stays new', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY) }
   const w = world(on, gh)
   await $.command.run(PRS)
   await clock.settle()
 
-  // The clock moves past the review's time, and the review only reaches the pane at the next refresh.
-  const withReview = ok([
-    {
-      ...TODAY[0]!,
-      reviews: [...TODAY[0]!.reviews!, { id: 'R2', author: 'YannAndreWeeki', state: 'COMMENTED', body: 'late review', at: '2026-11-26T11:30:00Z' }],
-    },
-    ...TODAY.slice(1),
-  ])
-  await clock.set(Date.parse('2026-11-26T11:01:00Z'))
+  // A review is posted at 11:30, after the fetch. The click comes at 11:40, and no refresh has shown the review yet.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await clock.set(Date.parse('2026-11-26T11:40:00Z'))
   await ui.press({ key: 'pr:P67' })
   await ui.press({ key: 'pr:P67' })
   // Stamped with the newest item shown (10:30, my own comment), not with the click time.
   expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
 
-  gh.current = withReview
-  await clock.set(Date.parse('2026-11-26T11:40:00Z'))
+  gh.current = ok(withReview())
   await ui.press({ key: 'refresh' })
   expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toMatch(/nouveau/)
+  await ui.unmount()
+})
+
+test('a click that lands while a refresh writes the seen state is stamped from what the refresh publishes', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+
+  // The next refresh brings a review at 11:30; its seen write is held between the store read and the store write.
+  gh.current = ok(withReview())
+  const writing = w.hold('set')
+  const tick = clock.advance(120_000)
+  await writing.reached
+  // The click comes now, while the pane still holds the old list.
+  const click = ui.press({ key: 'pr:P67' })
+  await clock.settle()
+  writing.open()
+  await tick
+  await click
+
+  // The pane now shows the review, and collapsing keeps the PR quiet: the stamp covers what was shown.
+  expect(await ui.find({ type: 'Text', text: 'late review' })).toBeDefined()
+  await ui.press({ key: 'pr:P67' })
+  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).not.toMatch(/nouveau/)
+  expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T11:30:00Z')
   await ui.unmount()
 })
 
@@ -458,23 +502,115 @@ test('a click during a refresh and the refresh both keep their seen changes', as
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  hold.gate = new Promise<void>(resolve => {
-    hold.release = resolve
-  })
+  const answer = w.hold('gh')
   const tick = clock.advance(120_000)
+  await answer.reached
   await clock.settle()
   // The pane is still drawn: click a PR while gh has not answered.
-  await ui.press({ key: 'pr:P7' })
-  hold.release?.()
-  hold.gate = undefined
+  await ui.press({ key: 'pr:P67' })
+  answer.open()
   await tick
   await clock.settle()
 
   const stored = w.store.get('seen') as Record<string, string>
   // The click survived the refresh, and the refresh dropped the PR that left.
-  expect(Object.keys(stored).sort()).toEqual(['P67', 'P7'])
-  // P7 is expanded and has no activity: counted seen as of the refresh that just showed it.
-  expect(stored.P7).toBe('2026-11-26T11:02:00.000Z')
+  expect(Object.keys(stored)).toEqual(['P67'])
+  expect(stored.P67).toBe('2026-11-26T10:59:00Z')
+  await ui.unmount()
+})
+
+test('another session\'s seen stamps are merged, never overwritten, and only PRs gone from the result are pruned', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pr:P67' })
+  expect(w.store.get('seen')).toEqual({ P67: '2026-11-26T10:30:00Z' })
+
+  // Another session shares the store: it saw P67 later, P6 and a PR that has left.
+  w.store.set('seen', { P67: '2026-11-26T10:45:00Z', P6: '2026-11-26T09:00:00Z', P7: '2026-11-26T09:00:00Z', GONE: '2026-01-01T00:00:00Z' })
+
+  // This session expands another PR and refreshes: nothing the other session wrote for an open PR is lost.
+  await ui.press({ key: 'pr:P6' })
+  expect(w.store.get('seen')).toEqual({
+    P67: '2026-11-26T10:45:00Z',
+    P6: '2026-11-26T09:00:00Z',
+    P7: '2026-11-26T09:00:00Z',
+    GONE: '2026-01-01T00:00:00Z',
+  })
+  await ui.press({ key: 'refresh' })
+  const stored = w.store.get('seen') as Record<string, string>
+  expect(Object.keys(stored).sort()).toEqual(['P6', 'P67', 'P7'])
+  // The later stamp wins: the other session's 10:45 for P67, and its 09:00 for P6 over this session's 11-24 one.
+  expect(stored.P67).toBe('2026-11-26T10:45:00Z')
+  expect(stored.P6).toBe('2026-11-26T09:00:00Z')
+  await ui.unmount()
+})
+
+test('a store that fails never leaves the pane on "actualisation…" or stops a PR from expanding', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  w.down.get = true
+  w.down.set = true
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeDefined()
+  await ui.press({ key: 'pr:P67' })
+  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a stored time that is not a time is ignored and never written back', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  w.store.set('seen', { P67: 'garbage', P7: '' })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // P67 has foreign activity and no valid stamp: still new.
+  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toMatch(/nouveau/)
+  await ui.press({ key: 'pr:P18' })
+  const stored = w.store.get('seen') as Record<string, string>
+  expect(Object.values(stored).every(at => Number.isFinite(Date.parse(at)))).toBe(true)
+  await ui.unmount()
+})
+
+test('a comment posted while a refresh runs is not swallowed for a PR that had no activity', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // P7 has no activity and is open on screen when the next refresh runs.
+  await ui.press({ key: 'pr:P7' })
+
+  const answer = w.hold('gh')
+  const tick = clock.advance(120_000)
+  await answer.reached
+  // A comment is posted at 11:02:30 while gh is answering without it; the answer lands at 11:03.
+  await clock.set(Date.parse('2026-11-26T11:03:00Z'))
+  answer.open()
+  await tick
+  await ui.press({ key: 'pr:P7' })
+
+  gh.current = ok(
+    TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CX', author: 'Yann', body: 'during the fetch', at: '2026-11-26T11:02:30Z' }] } : raw)),
+  )
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Button', key: 'pr:P7' }))?.text).toMatch(/nouveau/)
   await ui.unmount()
 })
 

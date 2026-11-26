@@ -18,30 +18,53 @@ const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
 const isNew = (pr: Pr, login: string | undefined, seenAt: string | undefined) =>
   pr.activity.some(item => item.author !== login && (seenAt === undefined || Date.parse(item.at) > Date.parse(seenAt)))
 
-// The one door to the seen state: the atom is the truth, `$.store` its copy.
-// Changes run one after another, so a refresh and a click never overwrite each
-// other, and the store always ends up holding the last atom value.
-let isSeenLoaded = false
-let seenQueue: Promise<unknown> = Promise.resolve()
+type Seen = Record<string, string>
 
-const changeSeen = ($: EngineInterface, change: (seen: Record<string, string>) => Record<string, string>) => {
-  const run = async () => {
-    if (!isSeenLoaded) {
-      const stored = await $.store.get(SEEN_KEY)
-      const earlier = stored !== null && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, string>) : {}
-      await update($, seen, current => ({ ...earlier, ...current }))
-      isSeenLoaded = true
+const isTime = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
+
+/** Later stamp per PR; anything that is not a time is dropped. */
+const laterOf = (...lists: Seen[]): Seen => {
+  const merged: Seen = {}
+  for (const list of lists) {
+    for (const [id, at] of Object.entries(list)) {
+      if (isTime(at) && (merged[id] === undefined || Date.parse(at) > Date.parse(merged[id]))) merged[id] = at
     }
-    const next = await update($, seen, change)
-    await $.store.set(SEEN_KEY, next)
   }
-  const done = seenQueue.then(run, run)
-  seenQueue = done.catch(() => undefined)
+  return merged
+}
+
+// The pane's changes (a click, a refresh's result) run one at a time, so each
+// one reads `expanded` and `load` as they are and the stamp it writes matches
+// what the pane then shows.
+let queue: Promise<unknown> = Promise.resolve()
+const inQueue = <T,>(task: () => Promise<T>): Promise<T> => {
+  const done = queue.then(task, task)
+  queue = done.then(
+    () => undefined,
+    () => undefined,
+  )
   return done
 }
 
-/** What the expansion shows of a PR: its newest item, or the moment the data was fetched when it has none. */
-const shownUpTo = (pr: Pr, fetchedAt: string) => pr.activity.reduce((latest, item) => (item.at > latest ? item.at : latest), pr.activity[0]?.at ?? fetchedAt)
+// The one door to the seen state, called inside the queue. `$.store` is shared
+// by every session and the atom is this session's, so each change re-reads the
+// store, keeps the later stamp per PR, applies the change and writes the result.
+// Losing the stored copy only brings badges back, so a store failure never
+// stops the pane.
+const changeSeen = async ($: EngineInterface, change: (current: Seen) => Seen) => {
+  const stored = await $.store.get(SEEN_KEY).catch(() => undefined)
+  const earlier = stored !== null && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Seen) : {}
+  const next = await update($, seen, current => change(laterOf(earlier, current)))
+  await $.store.set(SEEN_KEY, next).catch(() => undefined)
+}
+
+/** The time of the newest item the expansion shows; none for a PR without activity, which stays new for anything that comes. */
+const shownUpTo = (pr: Pr) => (pr.activity.length === 0 ? undefined : pr.activity.reduce((latest, item) => (item.at > latest ? item.at : latest), pr.activity[0]!.at))
+
+const stamped = (current: Seen, pr: Pr | undefined): Seen => {
+  const at = pr && shownUpTo(pr)
+  return pr && at !== undefined ? laterOf(current, { [pr.id]: at }) : current
+}
 
 let isRefreshing = false
 
@@ -57,34 +80,41 @@ const refresh = async ($: EngineInterface) => {
     } catch (error) {
       next = { status: 'error', isLoading: false, prs: [], error: clean(error instanceof Error ? error.message : String(error)) }
     }
-    if (next.status === 'ok') {
-      const { prs, fetchedAt = '' } = next
-      const openId = await read($, expanded)
-      // One change before the list is published: drop PRs that left, and
-      // count what an expanded PR now shows as seen.
-      await changeSeen($, current => {
-        const kept = Object.fromEntries(Object.entries(current).filter(([id]) => prs.some(pr => pr.id === id)))
-        const open = prs.find(pr => pr.id === openId)
-        return open ? { ...kept, [open.id]: shownUpTo(open, fetchedAt) } : kept
-      })
-    }
-    await update($, load, () => next)
+    await inQueue(async () => {
+      if (next.status === 'ok') {
+        const { prs } = next
+        const openId = await read($, expanded)
+        // Drop the PRs absent from this fresh result, and count what an
+        // expanded PR now shows as seen, before the list is published.
+        await changeSeen($, current =>
+          stamped(
+            Object.fromEntries(Object.entries(current).filter(([id]) => prs.some(pr => pr.id === id))),
+            prs.find(pr => pr.id === openId),
+          ),
+        ).catch(() => undefined)
+      }
+      await update($, load, () => next)
+    })
+  } catch {
+    // The pane must not stay on "actualisation…".
+    await update($, load, (state): PrLoad => ({ ...state, isLoading: false })).catch(() => undefined)
   } finally {
     isRefreshing = false
   }
 }
 
-const toggle = async ($: EngineInterface, pr: Pr) => {
-  if ((await read($, expanded)) === pr.id) {
-    await update($, expanded, () => null)
-    return
-  }
-  // The PR as the pane holds it now, which is what the expansion will show.
-  const { prs, fetchedAt = '' } = await read($, load)
-  const shown = prs.find(one => one.id === pr.id) ?? pr
-  await changeSeen($, current => ({ ...current, [shown.id]: shownUpTo(shown, fetchedAt) }))
-  await update($, expanded, () => pr.id)
-}
+const toggle = ($: EngineInterface, pr: Pr) =>
+  inQueue(async () => {
+    if ((await read($, expanded)) === pr.id) {
+      await update($, expanded, () => null)
+      return
+    }
+    // The PR as the pane holds it now, which is what the expansion shows.
+    const { prs } = await read($, load)
+    const shown = prs.find(one => one.id === pr.id)
+    await changeSeen($, current => stamped(current, shown)).catch(() => undefined)
+    await update($, expanded, () => pr.id)
+  }).catch(() => undefined)
 
 export const register: Register = on => {
   let isTimerOn = false
