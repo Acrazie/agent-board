@@ -348,21 +348,13 @@ export const register: Register = on => {
               {`${glyph(isOpen)}${shortRepo(repo)}`}
             </Button>
             {Client ? (
-              // The rest of the band presses too: a Client region that fills it and posts a toggle (see `ui.message`).
-              <Client key={`band:${section}:${repo}`} module="./band.tsx" props={{ count: prs.length, isNew: !isOpen && prs.some(badged) }} flexGrow={1} width="100%" />
-            ) : (
-              [
-                Svg ? <Box key="spacer" flexGrow={1} /> : null,
-                <Text key="count" dimColor>
-                  {prs.length}
-                </Text>,
-                !isOpen && prs.some(badged) ? (
-                  <Text key="new" color="yellow">
-                    nouveau
-                  </Text>
-                ) : null,
-              ]
-            )}
+              // An empty pressable filler: a press in it posts a toggle (see `ui.message`). It draws nothing, so it has a height.
+              <Client key={`band:${section}:${repo}`} module="./band.tsx" flexGrow={1} height={1} />
+            ) : Svg ? (
+              <Box flexGrow={1} />
+            ) : null}
+            <Text dimColor>{prs.length}</Text>
+            {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
           </Box>
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>

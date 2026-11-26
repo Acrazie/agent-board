@@ -196,11 +196,6 @@ const lineText = (node: unknown): string[] => {
   if (type === 'Svg') return [props?.alt === 'déplié' ? '∨' : '›']
   if (type === 'Button') return [String(props?.label ?? '')]
   if (type === 'Text') return [children.flatMap(lineText).join('')]
-  // A desktop band's Client region: what it is handed to draw (its own drawing is checked apart).
-  if (type === 'Client') {
-    const { count, isNew } = props?.props as { count: number; isNew: boolean }
-    return isNew ? [String(count), 'nouveau'] : [String(count)]
-  }
   return children.flatMap(lineText)
 }
 /** Each control line, keyed by its Button's key, read as `∨ weeki_map_api 2 nouveau`. */
@@ -440,9 +435,9 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       const parts = band.children as Drawn[]
       expect(parts[1]?.props?.plain).toBe(true)
       if (surface === 'desktop') {
-        // The rest of the band is a Client region that fills it and presses too.
-        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client'])
-        expect(parts[2]?.props).toMatchObject({ width: '100%', flexGrow: 1 })
+        // Between the name and the count, an empty Client region grows to fill the band and presses too.
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client', 'Text'])
+        expect(parts[2]?.props).toMatchObject({ module: 'hooks/band.tsx', flexGrow: 1, height: 1 })
       } else {
         expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
         expect(parts[2]?.props?.flexGrow).toBe(1)
@@ -485,9 +480,11 @@ test('desktop: a press anywhere in a repository band\'s Client region toggles th
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
   const band = 'band:open:weeki-io/weeki_atlas_api'
-  // The region draws the count and the badge at its right edge.
-  expect((await ui.findAll({ type: 'Text', in: band })).map(t => t.text)).toEqual(['1', 'nouveau'])
+  // The region draws no text: the count and the badge are the band's own Texts, after it.
+  expect(await ui.findAll({ type: 'Text', in: band })).toEqual([])
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
+  const parts = (await ui.findAll({ type: 'Box' })).find(box => box.key === `line:${row}`)?.children as Drawn[]
+  expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client', 'Text', 'Text'])
 
   // A left press far right in the region expands the row; a right press does nothing.
   await ui.pointer({ type: 'down', x: 30, y: 0, button: 'right', in: band })
