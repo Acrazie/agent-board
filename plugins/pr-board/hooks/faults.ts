@@ -15,3 +15,7 @@ export const withFault = (records: readonly string[], load: string, element: str
 
 /** Whether `element` failed during `load`. */
 export const isFaulted = (records: readonly string[], load: string, element: string) => records.includes(recordOf(load, element))
+
+/** The records without `element` for `load`: its Client gets drawn again. */
+export const withoutFault = (records: readonly string[], load: string, element: string): string[] =>
+  records.filter(record => record !== recordOf(load, element))

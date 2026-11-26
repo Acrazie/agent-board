@@ -4,7 +4,7 @@ import type { Mounted } from 'claude-code/testing'
 
 import { FETCH_ARGV, ID_SHAPE, THREADS_ARGV } from '../hooks/github'
 import { clockTime } from '../hooks/register'
-import { isFaulted, withFault } from '../hooks/faults'
+import { isFaulted, withFault, withoutFault } from '../hooks/faults'
 
 const PANE = {
   plugin: 'pr-board',
@@ -2085,4 +2085,12 @@ test('session.start after /prs keeps one 2-minute refresh and clears a refresh a
   await clock.advance(120_000)
   expect(w.calls.length).toBe(before + 1)
   await ui.unmount()
+})
+
+test('a retried band fault is dropped for its load only', () => {
+  const records = withFault(withFault([], 'load-1', 'band:refresh'), 'load-1', 'band:mode:all')
+  const retried = withoutFault(records, 'load-1', 'band:refresh')
+  expect(isFaulted(retried, 'load-1', 'band:refresh')).toBe(false)
+  expect(isFaulted(retried, 'load-1', 'band:mode:all')).toBe(true)
+  expect(withoutFault(records, 'load-2', 'band:refresh')).toEqual(records)
 })
