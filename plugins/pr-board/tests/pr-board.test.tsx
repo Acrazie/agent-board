@@ -679,6 +679,44 @@ test('desktop: each band press flips its row exactly once, however many presses 
   await ui.unmount()
 })
 
+test('a collapsed section carries nouveau when one of its PRs has it; only Détails clears it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    if (surface === 'terminal') {
+      // Nothing in Ouvertes carries the badge yet: its collapsed header shows none.
+      await ui.press({ key: 'head:open' })
+      expect(await rowOf(ui, 'head:open')).toBe('› Ouvertes 2')
+      // A comment from someone else lands on P7.
+      gh.current = ok(TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T10:50:00Z' }] } : raw)))
+      await ui.press({ key: 'refresh' })
+    }
+    expect(await rowOf(ui, 'head:open')).toBe('› Ouvertes 2 nouveau')
+    // An expanded section leaves the badge to the repository row.
+    await ui.press({ key: 'head:open' })
+    expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
+    expect(await rowOf(ui, repoKey('open', 'weeki_atlas_api'))).toBe('› weeki_atlas_api 1 nouveau')
+    await ui.press({ key: 'head:open' })
+    await ui.unmount()
+  }
+  expect(w.store.get('seen')).toEqual({})
+
+  // Only Détails clears it.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'head:open' })
+  await toggleRow(ui, repoKey('open', 'weeki_atlas_api'))
+  await pressControl(ui, 'pr:P7')
+  await pressControl(ui, 'pr:P7')
+  await ui.press({ key: 'head:open' })
+  expect(await rowOf(ui, 'head:open')).toBe('› Ouvertes 2')
+  await ui.unmount()
+})
+
 test('an empty section is hidden', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY.filter(raw => raw.id === 'P7' || raw.id === 'P18')) }

@@ -244,7 +244,7 @@ export const register: Register = on => {
     const chevron = (isOpen: boolean) =>
       Svg ? <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} /> : null
     // One control line, keyed `line:<button key>`: the chevron, the Button, then what is drawn apart from its label.
-    const line = (key: string, isOpen: boolean, control: ReturnType<typeof Box>, ...after: ReturnType<typeof Text>[]) => (
+    const line = (key: string, isOpen: boolean, control: ReturnType<typeof Box>, ...after: (ReturnType<typeof Text> | null)[]) => (
       <Box key={`line:${key}`} flexDirection="row" alignItems="center" columnGap="xs" width="100%">
         {chevron(isOpen)}
         {control}
@@ -429,6 +429,8 @@ export const register: Register = on => {
                   {`${glyph(!closed.includes(section.id))}${section.title}`}
                 </Button>,
                 <Text dimColor>{section.prs.length}</Text>,
+                // A collapsed section carries the badge of the PRs it hides, as a collapsed repository does.
+                closed.includes(section.id) && section.prs.some(badged) ? <Text color="yellow">nouveau</Text> : null,
               )}
               {!closed.includes(section.id) && byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
             </Box>
