@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { FamilyLoad, Pr, PrLoad } from '../types'
-import { isFaulted, withFault } from './faults'
+import { isFaulted, withFault, withoutFault } from './faults'
 import { clean, fetchOpenPrs } from './github'
 import { prKey, readFamilyPrs } from './sessions'
 
@@ -256,6 +256,10 @@ const toggleSection = ($: EngineInterface, section: SectionId) =>
 // This load of the mod's code: a Client fault heard under an earlier load no longer holds.
 let loadId = ''
 let isTimerOn = false
+// How many times each band Client failed in this load: a failed one is tried again a few times, then left as a Button.
+let faultCounts = new Map<string, number>()
+const FAULT_RETRY_MS = 3000
+const FAULT_RETRIES = 5
 
 // The 2-minute refresh, armed once per load of this module, and only for a pane `/prs` opened.
 const armTimer = ($: EngineInterface) => {
@@ -267,6 +271,7 @@ const armTimer = ($: EngineInterface) => {
 export const register: Register = on => {
   loadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
   isTimerOn = false
+  faultCounts = new Map()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'prs', description: 'Ouvre le panneau de vos PR ouvertes dans weeki-io' })
@@ -333,6 +338,13 @@ export const register: Register = on => {
   on('ui.fault', async ($, e, next) => {
     if (e.requestId === PANE && e.element.startsWith('band:')) {
       await update($, faultedBands, records => withFault(records, loadId, e.element))
+      // A fault while the pane is resized fast (`run`: a flood) passes; draw the Client again a little later.
+      const load = loadId
+      const count = (faultCounts.get(e.element) ?? 0) + 1
+      faultCounts.set(e.element, count)
+      if (count <= FAULT_RETRIES) {
+        $.clock.after(FAULT_RETRY_MS, () => void update($, faultedBands, records => withoutFault(records, load, e.element)))
+      }
     }
     return next(e)
   })
@@ -470,7 +482,7 @@ export const register: Register = on => {
       </Button>
     )
     const top = (
-      <Box key="top" flexDirection="row" alignItems="center" columnGap="sm" width="100%">
+      <Box key="top" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap="sm" rowGap="sm" width="100%">
         {hasToggle ? tab('all', 'Toutes', countAll) : null}
         {hasToggle ? (bound.status === 'unavailable' ? unavailable : tab('session', 'Cette session', countSession)) : null}
         {hasToggle ? null : <Box flexGrow={1} />}
