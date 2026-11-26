@@ -429,6 +429,8 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     expect(bands).toHaveLength(4)
     for (const band of bands) {
       expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', alignItems: 'center', flexDirection: 'row' })
+      // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
+      expect(band.props).toMatchObject({ borderStyle: 'round', borderColor: '#8E8E9326' })
       expect(band.props.paddingX).toBeDefined()
       expect((band.children as Drawn[]).map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
       expect((band.children as Drawn[])[1]?.props?.plain).toBe(true)
@@ -454,6 +456,7 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
   expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
   const band = (await ui.findAll({ type: 'Box' })).find(box => box.key === 'line:repo:open:weeki-io/weeki_atlas_api')
   expect(band?.props.backgroundColor).toBeUndefined()
+  expect(band?.props.borderStyle).toBeUndefined()
   // Détails was opened on desktop just before.
   expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('∨ Détails')
   await ui.unmount()

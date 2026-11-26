@@ -324,7 +324,7 @@ export const register: Register = on => {
             alignItems="center"
             columnGap="xs"
             width="100%"
-            {...(Svg ? { backgroundColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
+            {...(Svg ? { backgroundColor: BAND, borderStyle: 'round', borderColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
           >
             {chevron(isOpen)}
             <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
