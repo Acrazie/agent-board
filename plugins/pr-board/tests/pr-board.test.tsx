@@ -196,6 +196,11 @@ const lineText = (node: unknown): string[] => {
   if (type === 'Svg') return [props?.alt === 'déplié' ? '∨' : '›']
   if (type === 'Button') return [String(props?.label ?? '')]
   if (type === 'Text') return [children.flatMap(lineText).join('')]
+  // A desktop band's Client region: what it is handed to draw (its own drawing is checked apart).
+  if (type === 'Client') {
+    const { count, isNew } = props?.props as { count: number; isNew: boolean }
+    return isNew ? [String(count), 'nouveau'] : [String(count)]
+  }
   return children.flatMap(lineText)
 }
 /** Each control line, keyed by its Button's key, read as `∨ weeki_map_api 2 nouveau`. */
@@ -432,9 +437,16 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
       expect(band.props).toMatchObject({ borderStyle: 'round', borderColor: '#8E8E9326' })
       expect(band.props.paddingX).toBeDefined()
-      expect((band.children as Drawn[]).map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
-      expect((band.children as Drawn[])[1]?.props?.plain).toBe(true)
-      expect((band.children as Drawn[])[2]?.props?.flexGrow).toBe(1)
+      const parts = band.children as Drawn[]
+      expect(parts[1]?.props?.plain).toBe(true)
+      if (surface === 'desktop') {
+        // The rest of the band is a Client region that fills it and presses too.
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Client'])
+        expect(parts[2]?.props).toMatchObject({ width: '100%', flexGrow: 1 })
+      } else {
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
+        expect(parts[2]?.props?.flexGrow).toBe(1)
+      }
     }
     expect(await rowOf(ui, 'repo:open:weeki-io/weeki_atlas_api')).toBe('› weeki_atlas_api 1')
     expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
@@ -459,6 +471,55 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
   expect(band?.props.borderStyle).toBeUndefined()
   // Détails was opened on desktop just before.
   expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('∨ Détails')
+  await ui.unmount()
+})
+
+test('desktop: a press anywhere in a repository band\'s Client region toggles the row, through the same path as its Button', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
+  const gh = { current: ok(commented) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const row = repoKey('open', 'weeki_atlas_api')
+  const band = 'band:open:weeki-io/weeki_atlas_api'
+  // The region draws the count and the badge at its right edge.
+  expect((await ui.findAll({ type: 'Text', in: band })).map(t => t.text)).toEqual(['1', 'nouveau'])
+  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
+
+  // A left press far right in the region expands the row; a right press does nothing.
+  await ui.pointer({ type: 'down', x: 30, y: 0, button: 'right', in: band })
+  await clock.settle()
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:P67'])
+  await ui.pointer({ type: 'down', x: 30, y: 0, button: 'left', in: band })
+  await ui.pointer({ type: 'up', x: 30, y: 0, button: 'left', in: band })
+  await clock.settle()
+  expect(await rowOf(ui, row)).toBe('∨ weeki_atlas_api 1')
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:P67', 'pr:P7'])
+  // Expanding keeps the badge on the PR; only Détails clears it.
+  expect(await isBadged(ui, 7)).toBe(true)
+  expect(w.store.get('seen')).toEqual({})
+
+  // Collapsing from the region closes the PR expanded in it, as the Button does.
+  await ui.press({ key: 'pr:P7' })
+  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  await ui.post({ toggle: true }, { in: band })
+  await clock.settle()
+  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1')
+  await ui.press({ key: row })
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+
+  // A post of another shape changes nothing.
+  await ui.post({ toggle: 'yes' }, { in: band })
+  await clock.settle()
+  expect(await rowOf(ui, row)).toBe('∨ weeki_atlas_api 1')
+  // Once a click has given the region the focus, Return toggles too.
+  await ui.key({ key: 'return', in: band })
+  await clock.settle()
+  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1')
+  expect([...w.store.keys()]).toEqual(['seen'])
   await ui.unmount()
 })
 

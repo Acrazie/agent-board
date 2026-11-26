@@ -204,12 +204,29 @@ export const register: Register = on => {
     return { text: isPlaced ? 'Panneau des PR ouvert.' : 'Aucune surface ne peut afficher le panneau des PR.' }
   })
 
+  // A press on a repository band's Client region (`band.tsx`): the same queued toggle as its Button,
+  // for a row the pane draws now. The key names the row; the posted data is only checked for its shape.
+  on('ui.message', async ($, e, next) => {
+    const isToggle = e.data !== null && typeof e.data === 'object' && (e.data as { toggle?: unknown }).toggle === true
+    if (e.requestId === PANE && e.module.endsWith('band.tsx') && e.element.startsWith('band:') && isToggle) {
+      const rest = e.element.slice('band:'.length)
+      const cut = rest.indexOf(':')
+      const section = rest.slice(0, cut)
+      const repo = rest.slice(cut + 1)
+      const prs = (await read($, load)).prs.filter(pr => sectionOf(pr) === section && pr.repo === repo)
+      if (prs.length > 0) await toggleRepo($, section as SectionId, repo, prs.map(pr => pr.id))
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const elements = $.ui.resolve(e)
     const { Box, Text, Button, Link } = elements
     // Where the surface draws Svg, the chevron sits left of the Button; the terminal keeps a text glyph in the label.
     // `resolve` completes every table with every name (a missing one draws a fragment), so the surface decides.
     const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
+    // Desktop alone draws a Client among the graphical surfaces (vscode and mobile have none).
+    const Client = e.surface === 'desktop' && 'Client' in elements ? elements.Client : undefined
     const glyph = (isOpen: boolean) => (Svg ? '' : isOpen ? '∨ ' : '› ')
     const chevron = (isOpen: boolean) =>
       Svg ? <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} /> : null
@@ -330,9 +347,22 @@ export const register: Register = on => {
             <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
               {`${glyph(isOpen)}${shortRepo(repo)}`}
             </Button>
-            {Svg ? <Box flexGrow={1} /> : null}
-            <Text dimColor>{prs.length}</Text>
-            {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
+            {Client ? (
+              // The rest of the band presses too: a Client region that fills it and posts a toggle (see `ui.message`).
+              <Client key={`band:${section}:${repo}`} module="./band.tsx" props={{ count: prs.length, isNew: !isOpen && prs.some(badged) }} flexGrow={1} width="100%" />
+            ) : (
+              [
+                Svg ? <Box key="spacer" flexGrow={1} /> : null,
+                <Text key="count" dimColor>
+                  {prs.length}
+                </Text>,
+                !isOpen && prs.some(badged) ? (
+                  <Text key="new" color="yellow">
+                    nouveau
+                  </Text>
+                ) : null,
+              ]
+            )}
           </Box>
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>
