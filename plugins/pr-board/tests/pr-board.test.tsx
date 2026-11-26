@@ -1,5 +1,6 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
+import type { Mounted } from 'claude-code/testing'
 
 import { FETCH_ARGV, ID_SHAPE, THREADS_ARGV } from '../hooks/github'
 
@@ -180,6 +181,20 @@ const world = (on: On, gh: { current: Gh }) => {
 
 const ok = (prs: Raw[]): Answer => ({ exitCode: 0, stdout: stdoutOf(prs), stderr: '' })
 
+type Ui = Pick<Mounted, 'find' | 'findAll' | 'press'>
+
+// The dim line under a PR's title starts with its number.
+const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new RegExp(`^#${number} `) })
+const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
+const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
+const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
+/** Expands every collapsed repository row, so each PR's Détails button is drawn. */
+const expandAll = async (ui: Ui) => {
+  for (const row of await ui.findAll({ type: 'Button' })) {
+    if (row.key?.startsWith('repo:') && row.text.startsWith('▸')) await ui.press({ key: row.key })
+  }
+}
+
 test('/prs opens the pane and loads with one fixed read-only gh call', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY) }
@@ -196,9 +211,8 @@ test('/prs opens the pane and loads with one fixed read-only gh call', async ($,
   expect(w.calls[0]?.join(' ')).not.toMatch(/mutation|--method|-X /)
 })
 
-test('sections: changes requested first, a PR never in both, newest first, draft marked', async ($, on) => {
+test('sections: À corriger, Ouvertes, Drafts in order; a draft that needs changes is listed once, in À corriger, marked draft', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
-  // A draft with changes requested lands only in À corriger.
   const draftToFix: Raw = { id: 'PD', number: 9, title: 'draft to fix', repo: 'weeki_map_api', updatedAt: '2026-11-20T00:00:00Z', isDraft: true, reviewDecision: 'CHANGES_REQUESTED' }
   const gh = { current: ok([...TODAY, draftToFix]) }
   world(on, gh)
@@ -207,22 +221,149 @@ test('sections: changes requested first, a PR never in both, newest first, draft
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('pr:')).map(b => b.key)
-    // À corriger by recency (67 then the older draft), then Ouvertes by recency.
-    expect(rows).toEqual(['pr:P67', 'pr:PD', 'pr:P7', 'pr:P18', 'pr:P6'])
-
     const heads = (await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)
-    expect(heads).toEqual(['À corriger (2)', 'Ouvertes (3)'])
+    expect(heads).toEqual(['À corriger (2)', 'Ouvertes (2)', 'Drafts (1)'])
 
-    const fixed = await ui.find({ type: 'Button', key: 'pr:PD' })
-    expect(fixed?.text).toMatch(/draft/)
-    const ready = await ui.find({ type: 'Button', key: 'pr:P7' })
-    expect(ready?.text).toMatch(/prête/)
-    const wip = await ui.find({ type: 'Button', key: 'pr:P6' })
-    expect(wip?.text).toMatch(/draft/)
-    expect(wip?.text).not.toMatch(/prête/)
+    await expandAll(ui)
+    // Each PR once: À corriger by recency (67, then the older draft), then Ouvertes, then Drafts.
+    expect(await keysOf(ui, 'pr:')).toEqual(['pr:P67', 'pr:PD', 'pr:P7', 'pr:P18', 'pr:P6'])
+    expect((await metaOf(ui, 9))?.text).toMatch(/^#9 · draft · /)
+    expect((await metaOf(ui, 6))?.text).toMatch(/^#6 · draft · /)
+    expect((await metaOf(ui, 7))?.text).not.toMatch(/draft/)
+    expect(await keysOf(ui, 'repo:draft:')).toEqual([repoKey('draft', 'weeki_notebook_api')])
     await ui.unmount()
   }
+})
+
+test('repositories: grouped per section with counts, newest first, À corriger expanded and the rest collapsed, reset when the pane reopens', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const at = (repo: string, id: string, number: number, updatedAt: string, more: Partial<Raw> = {}): Raw => ({ id, number, title: `${repo} ${number}`, repo, updatedAt, ...more })
+  const gh = {
+    current: ok([
+      at('weeki_map_api', 'A', 1, '2026-11-26T09:00:00Z'),
+      at('weeki_map_api', 'B', 2, '2026-11-25T09:00:00Z'),
+      at('weeki_map_api', 'C', 3, '2026-11-26T10:30:00Z', { isDraft: true }),
+      at('weeki_atlas_api', 'D', 4, '2026-11-26T10:00:00Z'),
+      at('weeki_user_api', 'E', 5, '2026-11-24T09:00:00Z', { reviewDecision: 'CHANGES_REQUESTED' }),
+      at('weeki_tiles_api', 'F', 6, '2026-11-26T08:00:00Z', { reviewDecision: 'CHANGES_REQUESTED' }),
+    ]),
+  }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const storedBefore = structuredClone([...w.store])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const rows = async () => (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:')).map(b => b.text)
+  // A repository with PRs in two sections appears in each, with only that section's PRs; repositories follow their newest PR.
+  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▾ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▸ weeki_map_api (2)', '▸ weeki_map_api (1)'])
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
+
+  await ui.press({ key: repoKey('open', 'weeki_map_api') })
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E', 'pr:A', 'pr:B'])
+  await ui.press({ key: repoKey('fix', 'weeki_user_api') })
+  await ui.press({ key: repoKey('draft', 'weeki_map_api') })
+  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▸ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▾ weeki_map_api (2)', '▾ weeki_map_api (1)'])
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:A', 'pr:B', 'pr:C'])
+  await ui.press({ key: repoKey('open', 'weeki_map_api') })
+  expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:C'])
+
+  // Expanded repositories live in session memory: the store is untouched.
+  expect([...w.store]).toEqual(storedBefore)
+  expect([...w.store.keys()]).toEqual(['seen'])
+
+  // Reopening the pane starts from the defaults again.
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(await rows()).toEqual(['▾ weeki_tiles_api (1)', '▾ weeki_user_api (1)', '▸ weeki_atlas_api (1)', '▸ weeki_map_api (2)', '▸ weeki_map_api (1)'])
+  await ui.unmount()
+})
+
+test('a PR shows its full title in a Text, never in a Button and without the repository, then a dim line with number and age', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const long = 'ci: ignore integration tests in the pre-push hook when the branch only touches docs and specs'
+  const gh = { current: ok([...TODAY, { id: 'PL', number: 53, title: long, repo: 'weeki_map_api', updatedAt: '2026-11-26T09:00:00Z' }]) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    await expandAll(ui)
+    const buttons = (await ui.findAll({ type: 'Button' })).map(b => b.text)
+    for (const title of [long, ...TODAY.map(raw => raw.title)]) {
+      const text = await ui.find({ type: 'Text', text: title })
+      expect(text?.text).toBe(title)
+      expect(text?.props.wrap === undefined || text?.props.wrap === 'wrap').toBe(true)
+      expect(buttons.filter(label => label.includes(title))).toEqual([])
+    }
+    expect((await metaOf(ui, 53))?.text).toBe('#53 · mise à jour il y a 2 h')
+    expect((await metaOf(ui, 18))?.text).toBe('#18 · mise à jour il y a 1 j')
+    await ui.unmount()
+  }
+})
+
+test('an empty section is hidden', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY.filter(raw => raw.id === 'P7' || raw.id === 'P18')) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)).toEqual(['Ouvertes (2)'])
+  expect(await ui.find({ type: 'Text', text: /À corriger|Drafts/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('badge on a collapsed repository: expanding the repository keeps it, only Détails clears it', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
+  const gh = { current: ok(commented) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const row = repoKey('open', 'weeki_atlas_api')
+  const rowText = async () => (await ui.find({ type: 'Button', key: row }))?.text
+  expect(await rowText()).toBe('▸ weeki_atlas_api (1) nouveau')
+  // A collapsed repository without news shows none.
+  expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_atlas_frontend') }))?.text).not.toMatch(/nouveau/)
+
+  await ui.press({ key: row })
+  expect(await isBadged(ui, 7)).toBe(true)
+  await ui.press({ key: row })
+  expect(await rowText()).toMatch(/nouveau/)
+  expect(w.store.get('seen')).toEqual({})
+
+  await ui.press({ key: row })
+  await ui.press({ key: 'pr:P7' })
+  expect(await isBadged(ui, 7)).toBe(false)
+  await ui.press({ key: 'pr:P7' })
+  await ui.press({ key: row })
+  expect(await rowText()).toBe('▸ weeki_atlas_api (1)')
+  expect(Object.keys(w.store.get('seen') as object)).toEqual(['P7'])
+  await ui.unmount()
+})
+
+test('collapsing a repository closes the PR expanded in it, so a refresh never clears a hidden badge', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pr:P67' })
+  await ui.press({ key: repoKey('fix', 'weeki_atlas') })
+  gh.current = ok(withReview())
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Button', key: repoKey('fix', 'weeki_atlas') }))?.text).toMatch(/nouveau/)
+  await ui.press({ key: repoKey('fix', 'weeki_atlas') })
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await isBadged(ui, 67)).toBe(true)
+  await ui.unmount()
 })
 
 test('badge: set by a review from someone else, not by my own comment, cleared on expand, kept across refresh', async ($, on) => {
@@ -233,7 +374,8 @@ test('badge: set by a review from someone else, not by my own comment, cleared o
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  const badge = (key: string) => ui.find({ type: 'Button', key }).then(b => /nouveau/.test(b?.text ?? ''))
+  await expandAll(ui)
+  const badge = (key: string) => isBadged(ui, Number(key.slice(4)))
   expect(await badge('pr:P67')).toBe(true)
   // Only my own comment on P6, nothing on P7.
   expect(await badge('pr:P6')).toBe(false)
@@ -273,7 +415,7 @@ test('a seen state stored by an earlier session keeps a PR quiet', async ($, on)
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).not.toMatch(/nouveau/)
+  expect(await isBadged(ui, 67)).toBe(false)
   // A PR that left the list is dropped from the stored state.
   expect(w.store.get('seen')).toEqual({ P67: '2026-11-26T10:59:00Z' })
   await ui.unmount()
@@ -323,6 +465,7 @@ test('the expansion lists at most the 20 most recent items, newest first', async
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await expandAll(ui)
   await ui.press({ key: 'pr:PM' })
   const bodies = (await ui.findAll({ type: 'Text', text: /^(comment|review) \d+$/ })).map(t => t.text)
   expect(bodies).toHaveLength(20)
@@ -415,6 +558,7 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await expandAll(ui)
   await ui.press({ key: 'pr:P67' })
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
 
@@ -461,7 +605,7 @@ test('expanding stamps what the pane shows, not the clock: a review posted betwe
 
   gh.current = ok(withReview())
   await ui.press({ key: 'refresh' })
-  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toMatch(/nouveau/)
+  expect(await isBadged(ui, 67)).toBe(true)
   await ui.unmount()
 })
 
@@ -488,7 +632,7 @@ test('a click that lands while a refresh writes the seen state is stamped from w
   // The pane now shows the review, and collapsing keeps the PR quiet: the stamp covers what was shown.
   expect(await ui.find({ type: 'Text', text: 'late review' })).toBeDefined()
   await ui.press({ key: 'pr:P67' })
-  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).not.toMatch(/nouveau/)
+  expect(await isBadged(ui, 67)).toBe(false)
   expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T11:30:00Z')
   await ui.unmount()
 })
@@ -526,6 +670,7 @@ test('another session\'s seen stamps are merged, never overwritten, and only PRs
   await $.command.run(PRS)
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await expandAll(ui)
   await ui.press({ key: 'pr:P67' })
   expect(w.store.get('seen')).toEqual({ P67: '2026-11-26T10:30:00Z' })
 
@@ -559,6 +704,7 @@ test('a store that fails never leaves the pane on "actualisation…" or stops a 
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await expandAll(ui)
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeDefined()
   await ui.press({ key: 'pr:P67' })
@@ -580,7 +726,8 @@ test('a stored time that is not a time is ignored and never written back', async
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   // P67 has foreign activity and no valid stamp: still new.
-  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toMatch(/nouveau/)
+  expect(await isBadged(ui, 67)).toBe(true)
+  await expandAll(ui)
   await ui.press({ key: 'pr:P18' })
   const stored = w.store.get('seen') as Record<string, string>
   expect(Object.values(stored).every(at => Number.isFinite(Date.parse(at)))).toBe(true)
@@ -595,6 +742,7 @@ test('a comment posted while a refresh runs is not swallowed for a PR that had n
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   // P7 has no activity and is open on screen when the next refresh runs.
+  await expandAll(ui)
   await ui.press({ key: 'pr:P7' })
 
   const answer = w.hold('gh')
@@ -610,7 +758,7 @@ test('a comment posted while a refresh runs is not swallowed for a PR that had n
     TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CX', author: 'Yann', body: 'during the fetch', at: '2026-11-26T11:02:30Z' }] } : raw)),
   )
   await ui.press({ key: 'refresh' })
-  expect((await ui.find({ type: 'Button', key: 'pr:P7' }))?.text).toMatch(/nouveau/)
+  expect(await isBadged(ui, 7)).toBe(true)
   await ui.unmount()
 })
 
@@ -647,7 +795,9 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   expect(w.calls[2]?.slice(5)).toEqual(['-f', 'id=PT', '-f', 'cursor=CUR2'])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: 'pr:PT' }))?.text).toMatch(/nouveau/)
+  expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_map_api') }))?.text).toMatch(/nouveau/)
+  await expandAll(ui)
+  expect(await isBadged(ui, 3)).toBe(true)
   await ui.press({ key: 'pr:PT' })
   const bodies = (await ui.findAll({ type: 'Text', text: /^(on the first page|reply on an older thread|newest of all)$/ })).map(t => t.text)
   expect(bodies).toEqual(['newest of all', 'reply on an older thread', 'on the first page'])
@@ -699,7 +849,10 @@ test('no control character from GitHub reaches the drawn tree, on any surface', 
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const press = surface === 'terminal' || surface === 'desktop'
-    if (press) await ui.press({ key: 'pr:PE' })
+    if (press) {
+      await expandAll(ui)
+      await ui.press({ key: 'pr:PE' })
+    }
     const strings = stringsOf(await ui.drawn())
     expect(strings.filter(text => CONTROLS.test(text))).toEqual([])
     if (press) {
@@ -753,6 +906,7 @@ test('without a reviewDecision, a reviewer\'s latest decisive review sends the P
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const heads = (await ui.findAll({ type: 'Text', text: /\(\d\)$/ })).map(t => t.text)
   expect(heads).toEqual(['À corriger (2)', 'Ouvertes (4)'])
+  await expandAll(ui)
   const rows = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(key => key?.startsWith('pr:'))
   expect(new Set(rows.slice(0, 2))).toEqual(new Set(['pr:S1', 'pr:S5']))
   expect(new Set(rows.slice(2))).toEqual(new Set(['pr:S2', 'pr:S3', 'pr:S4', 'pr:S6']))
