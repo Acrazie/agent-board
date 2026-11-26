@@ -34,7 +34,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 - **Read only.** The mod runs fixed `gh api graphql` queries (see [`hooks/github.ts`](hooks/github.ts)). The only values that enter a command are opaque GitHub ids and pagination cursors, checked against a strict pattern first; human-written text (titles, bodies, names, paths) never does. Nothing is written to GitHub.
 - **Review text is display-only.** It is drawn as plain text and never sent to Claude.
 - The only thing stored (`$.store`) is, per PR, when you last opened its details. It is local to this machine; losing it only brings the badges back. Which sections and repositories are expanded is kept in session memory only.
-- Only the first 50 open PRs of the search are listed.
+- Every open PR is listed: the search is read 50 at a time, following GitHub's cursor. If a page fails, the pane shows the error rather than a shorter list.
 
 ## Develop
 

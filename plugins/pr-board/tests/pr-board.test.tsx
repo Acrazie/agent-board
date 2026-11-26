@@ -76,7 +76,9 @@ const pr = (raw: Raw) => ({
   reviewThreads: pageOf(raw.threads ?? [], raw.moreThreads),
 })
 
-const stdoutOf = (prs: Raw[]) => JSON.stringify({ data: { viewer: { login: ME }, search: { nodes: prs.map(pr) } } })
+/** One page of the search; `next` is the cursor of the page after it, if any. */
+const stdoutOf = (prs: Raw[], next?: string) =>
+  JSON.stringify({ data: { viewer: { login: ME }, search: { pageInfo: { hasNextPage: next !== undefined, endCursor: next ?? null }, nodes: prs.map(pr) } } })
 
 const TODAY: Raw[] = [
   {
@@ -107,8 +109,18 @@ const TODAY: Raw[] = [
 // values in it are ids and cursors that match the strict pattern.
 const expectFixedArgv = (calls: readonly (readonly string[])[]) => {
   for (const call of calls) {
-    if (call.length === FETCH_ARGV.length) {
+    const isSearch = call[4] === FETCH_ARGV[4]
+    if (isSearch && call.length === FETCH_ARGV.length) {
       expect(call).toEqual([...FETCH_ARGV])
+      continue
+    }
+    if (isSearch) {
+      // The search's next page: the same command, and GitHub's cursor as the one value.
+      expect(call).toHaveLength(FETCH_ARGV.length + 2)
+      expect(call.slice(0, FETCH_ARGV.length)).toEqual([...FETCH_ARGV])
+      expect(call[FETCH_ARGV.length]).toBe('-f')
+      expect(call[FETCH_ARGV.length + 1]).toMatch(/^cursor=/)
+      expect(call[FETCH_ARGV.length + 1]?.slice(7)).toMatch(ID_SHAPE)
       continue
     }
     expect(call.slice(0, THREADS_ARGV.length)).toEqual([...THREADS_ARGV])
@@ -1284,6 +1296,58 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   await pressControl(ui, 'pr:PT')
   const bodies = (await ui.findAll({ type: 'Text', text: /^(on the first page|reply on an older thread|newest of all)$/ })).map(t => t.text)
   expect(bodies).toEqual(['newest of all', 'reply on an older thread', 'on the first page'])
+  await ui.unmount()
+})
+
+test('more than 50 open PRs: every page of the search is read with fixed argv, and a page that fails shows the error', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T12:00:00Z') })
+  const many: Raw[] = Array.from({ length: 63 }, (_, i) => ({
+    id: `PP${i}`,
+    number: 100 + i,
+    title: `pr ${i}`,
+    repo: `weeki_repo_${i % 7}`,
+    updatedAt: `2026-11-${String(10 + (i % 15)).padStart(2, '0')}T08:00:00Z`,
+  }))
+  const pages: Record<string, Answer> = { CURS1: ok(many.slice(50)) }
+  const gh: { current: Gh } = {
+    current: argv => {
+      const cursor = argv.find(a => a.startsWith('cursor='))?.slice(7)
+      return cursor === undefined ? { exitCode: 0, stdout: stdoutOf(many.slice(0, 50), 'CURS1'), stderr: '' } : (pages[cursor] ?? new Error('unknown cursor'))
+    },
+  }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  // One call per page, the second following the cursor GitHub gave.
+  expect(w.calls).toHaveLength(2)
+  expectFixedArgv(w.calls)
+  expect(w.calls[1]?.slice(FETCH_ARGV.length)).toEqual(['-f', 'cursor=CURS1'])
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await headsOf(ui)).toEqual(['∨ Ouvertes 63'])
+  await expandAll(ui)
+  expect(await keysOf(ui, 'pr:')).toHaveLength(63)
+
+  // The second page fails: the pane shows the error, never the first 50 alone.
+  pages.CURS1 = { exitCode: 1, stdout: '', stderr: 'HTTP 502' }
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /502/ })).toBeDefined()
+  expect(await keysOf(ui, 'pr:')).toEqual([])
+
+  // A cursor that is not an opaque GitHub id never reaches a command.
+  for (const bad of ['x"; rm -rf ~ #', '--hostname=evil.example', '$(whoami)', 'two words', '']) {
+    w.calls.length = 0
+    gh.current = { exitCode: 0, stdout: stdoutOf(many.slice(0, 50), bad), stderr: '' }
+    await ui.press({ key: 'refresh' })
+    expect(w.calls).toHaveLength(1)
+    expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
+  }
+
+  // A page that does not say what follows is an error too.
+  gh.current = { exitCode: 0, stdout: JSON.stringify({ data: { viewer: { login: ME }, search: { nodes: [] } } }), stderr: '' }
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   await ui.unmount()
 })
 
