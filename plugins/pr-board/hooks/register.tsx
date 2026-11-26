@@ -295,7 +295,8 @@ export const register: Register = on => {
 
     const prRow = (pr: Pr) => (
       <Box key={`row:${pr.id}`} flexDirection="column" alignItems="stretch" width="100%">
-        <Text>{pr.title}</Text>
+        {/* The full title, opening the PR on GitHub. */}
+        <Link href={pr.url} label={pr.title} />
         <Text dimColor>
           #{pr.number}
           {pr.isDraft ? ' · draft' : ''} · mise à jour {ago(now - Date.parse(pr.updatedAt))}
@@ -312,8 +313,7 @@ export const register: Register = on => {
           </Box>,
         )}
         {openId === pr.id && (
-          <Box flexDirection="column" paddingLeft={2}>
-            <Link href={pr.url}>Ouvrir sur GitHub</Link>
+          <Box key={`details:${pr.id}`} flexDirection="column" paddingLeft={2}>
             {pr.activity.length === 0 && <Text dimColor>Aucune revue ni commentaire.</Text>}
             {pr.activity.map(item => (
               <Box key={`a:${item.id}`} flexDirection="column" marginTop={1}>

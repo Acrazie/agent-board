@@ -206,6 +206,8 @@ const chevronRows = async (ui: Ui) =>
 const rowOf = async (ui: Ui, key: string) => (await chevronRows(ui)).find(row => row.key === key)?.text
 /** The section headers, as drawn: `∨ Ouvertes 2`. */
 const headsOf = async (ui: Ui) => (await chevronRows(ui)).filter(row => row.key.startsWith('head:')).map(row => row.text)
+/** The open Détails expansion, if any. */
+const openDetails = async (ui: Ui) => (await ui.findAll({ type: 'Box' })).find(box => box.key?.startsWith('details:'))
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
 const expandAll = async (ui: Ui) => {
   for (const row of await chevronRows(ui)) {
@@ -296,7 +298,7 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   await ui.unmount()
 })
 
-test('a PR shows its full title in a Text, never in a Button and without the repository, then a dim line with number and age', async ($, on) => {
+test('a PR shows its full title as a Link to the PR, never in a Button and without the repository, then a dim line with number and age', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const long = 'ci: ignore integration tests in the pre-push hook when the branch only touches docs and specs'
   const gh = { current: ok([...TODAY, { id: 'PL', number: 53, title: long, repo: 'weeki_map_api', updatedAt: '2026-11-26T09:00:00Z' }]) }
@@ -308,11 +310,12 @@ test('a PR shows its full title in a Text, never in a Button and without the rep
     const ui = await $.ui.mount({ ...PANE, surface })
     await expandAll(ui)
     const buttons = (await ui.findAll({ type: 'Button' })).map(b => b.text)
-    for (const title of [long, ...TODAY.map(raw => raw.title)]) {
-      const text = await ui.find({ type: 'Text', text: title })
-      expect(text?.text).toBe(title)
-      expect(text?.props.wrap === undefined || text?.props.wrap === 'wrap').toBe(true)
-      expect(buttons.filter(label => label.includes(title))).toEqual([])
+    for (const raw of [{ title: long, repo: 'weeki_map_api', number: 53 }, ...TODAY]) {
+      // The whole title, as a Link to the PR, never inside a Button.
+      const link = await ui.find({ type: 'Link', text: raw.title })
+      expect(link?.text).toBe(raw.title)
+      expect(link?.props.href).toBe(`https://github.com/weeki-io/${raw.repo}/pull/${raw.number}`)
+      expect(buttons.filter(label => label.includes(raw.title))).toEqual([])
     }
     expect((await metaOf(ui, 53))?.text).toBe('#53 · mise à jour il y a 2 h')
     expect((await metaOf(ui, 18))?.text).toBe('#18 · mise à jour il y a 1 j')
@@ -366,11 +369,11 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: repoKey('open', 'weeki_atlas_api') })
   await ui.press({ key: 'pr:P7' })
-  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  expect(await openDetails(ui)).toBeDefined()
   // Collapsing the section closes it at once, as a repository collapse does.
   await ui.press({ key: 'head:open' })
   await ui.press({ key: 'head:open' })
-  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await openDetails(ui)).toBeUndefined()
   await ui.press({ key: 'pr:P7' })
   await ui.press({ key: 'head:open' })
 
@@ -381,7 +384,7 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
 
   await ui.press({ key: 'head:open' })
   expect(await isBadged(ui, 7)).toBe(true)
-  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await openDetails(ui)).toBeUndefined()
   await ui.unmount()
 })
 
@@ -501,12 +504,12 @@ test('desktop: a press anywhere in a repository band\'s Client region toggles th
 
   // Collapsing from the region closes the PR expanded in it, as the Button does.
   await ui.press({ key: 'pr:P7' })
-  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  expect(await openDetails(ui)).toBeDefined()
   await ui.post({ toggle: true }, { in: band })
   await clock.settle()
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1')
   await ui.press({ key: row })
-  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await openDetails(ui)).toBeUndefined()
 
   // A post of another shape changes nothing.
   await ui.post({ toggle: 'yes' }, { in: band })
@@ -595,7 +598,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
   await ui.press({ key: row })
   expect(await isBadged(ui, 7)).toBe(true)
-  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await openDetails(ui)).toBeUndefined()
   await ui.unmount()
 })
 
@@ -627,7 +630,7 @@ for (const [move, before, after] of [
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
     await ui.press({ key: rows[0]!.key! })
     expect(await isBadged(ui, 67)).toBe(true)
-    expect(await ui.find({ type: 'Link' })).toBeUndefined()
+    expect(await openDetails(ui)).toBeUndefined()
     await ui.unmount()
   })
 }
@@ -646,7 +649,7 @@ test('collapsing a repository closes the PR expanded in it, so a refresh never c
   await ui.press({ key: 'refresh' })
   expect((await rowOf(ui, repoKey('fix', 'weeki_atlas')))).toMatch(/nouveau/)
   await ui.press({ key: repoKey('fix', 'weeki_atlas') })
-  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  expect(await openDetails(ui)).toBeUndefined()
   expect(await isBadged(ui, 67)).toBe(true)
   await ui.unmount()
 })
@@ -717,7 +720,8 @@ test('the expansion shows author, text, file:line and a link, a crafted comment 
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'pr:P67' })
 
-    expect((await ui.find({ type: 'Link' }))?.props.href).toBe('https://github.com/weeki-io/weeki_atlas/pull/67')
+    expect(await openDetails(ui)).toBeDefined()
+    expect(await ui.find({ text: /Ouvrir sur GitHub/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /YannAndreWeeki · CHANGES_REQUESTED/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /YannAndreWeeki · src\/report\.ts:42/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'rename this' })).toBeDefined()
@@ -856,7 +860,7 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
   expect(await ui.find({ type: 'Text', text: /Chargement des PR/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
-  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  expect(await openDetails(ui)).toBeDefined()
 
   answer.open()
   await tick
@@ -993,7 +997,7 @@ test('a store that fails never leaves the pane on "actualisation…" or stops a 
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeDefined()
   await ui.press({ key: 'pr:P67' })
-  expect(await ui.find({ type: 'Link' })).toBeDefined()
+  expect(await openDetails(ui)).toBeDefined()
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()

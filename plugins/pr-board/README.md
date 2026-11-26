@@ -7,9 +7,9 @@ A Claude Code mod that shows your open pull requests in the `weeki-io` organizat
 - **Ouvertes**: every other ready PR. **Drafts**: every other draft PR. A PR is listed exactly once: a draft that needs changes is in *À corriger*, marked *draft*. An empty section is hidden. Each section has a dim header, its name then its count (`Ouvertes 45`), that collapses or expands it; every section starts expanded.
 - Section headers, repository rows and **Détails** carry a thin chevron on their left, pointing right when collapsed and down when expanded. The terminal, which draws no SVG, shows `›` and `∨` at the start of the label instead.
 - Within a section, PRs are grouped by repository, one full-width grey row per repository with its name, and its PR count at the right edge (with *nouveau* when collapsed). A click on the name expands or collapses it; on desktop, so does a click in the empty space between the name and the count. When the pane opens, the repositories of *À corriger* are expanded and every other one is collapsed; this is not remembered across openings. Repositories come by their most recently updated PR, and PRs newest first.
-- Each PR shows its full title, then a dim line with its number, the time since its last update and its badge (`#53 · mise à jour il y a 2 h · nouveau`), then a **Détails** button.
+- Each PR shows its full title, a link that opens the PR on GitHub, then a dim line with its number, the time since its last update and its badge (`#53 · mise à jour il y a 2 h · nouveau`), then a **Détails** button.
 - **nouveau** badge: someone other than you reviewed or commented since you last opened that PR's details in the pane. A collapsed repository shows it when one of its PRs has it.
-- **Détails** expands the 20 most recent reviews and comments (author, text, file and line when inline) and a link to GitHub. It is the only thing that clears the badge; expanding a repository does not.
+- **Détails** expands the 20 most recent reviews and comments (author, text, file and line when inline). It is the only thing that clears the badge; expanding a repository does not.
 - The pane refreshes when it opens, every 2 minutes, and with the **Actualiser** button (`r`).
 - If `gh` fails or is logged out, the pane says so. An empty list always means there are no open PRs.
 
