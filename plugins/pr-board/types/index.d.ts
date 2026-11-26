@@ -59,7 +59,7 @@ declare module 'claude-code' {
       repoRows: Record<string, boolean>
       /** Sections collapsed since the pane opened. Never stored. */
       closedSections: string[]
-      /** Keys of the band Clients that failed (`ui.fault`); those bands fall back to their Button. Never stored. */
+      /** `<load> <Client key>` of the band Clients that failed (`ui.fault`, `hooks/faults.ts`); those bands fall back to their Button for that load, until `/prs`. Never stored. */
       faultedBands: string[]
       /** `all` (Toutes) or `session` (Cette session); chosen again each time `/prs` opens the pane. Never stored. */
       mode: 'all' | 'session'

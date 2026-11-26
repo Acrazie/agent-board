@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { FamilyLoad, Pr, PrLoad } from '../types'
+import { isFaulted, withFault } from './faults'
 import { clean, fetchOpenPrs } from './github'
 import { prKey, readFamilyPrs } from './sessions'
 
@@ -17,7 +18,8 @@ const expanded = atom({ plugin: 'pr-board', key: 'expanded' } as const, null as 
 const repoRows = atom({ plugin: 'pr-board', key: 'repoRows' } as const, {} as Record<string, boolean>)
 // Sections the person collapsed since the pane opened; every section starts expanded. Session memory only.
 const closedSections = atom({ plugin: 'pr-board', key: 'closedSections' } as const, [] as string[])
-// Keys of the band Clients that failed on a surface (`ui.fault`); those bands are drawn with their Button instead. Session memory only.
+// The band Clients that failed on a surface (`ui.fault`), each with the load it failed in (`faults.ts`); those bands are
+// drawn with their Button instead until the next load or `/prs`. Session memory only.
 const faultedBands = atom({ plugin: 'pr-board', key: 'faultedBands' } as const, [] as string[])
 // Toutes or Cette session, chosen again each time `/prs` opens the pane. Session memory only.
 const mode = atom({ plugin: 'pr-board', key: 'mode' } as const, 'all' as 'all' | 'session')
@@ -251,11 +253,31 @@ const toggleSection = ($: EngineInterface, section: SectionId) =>
     await closeHidden($, (await read($, load)).prs)
   }).catch(() => undefined)
 
+// This load of the mod's code: a Client fault heard under an earlier load no longer holds.
+let loadId = ''
+let isTimerOn = false
+
+// The 2-minute refresh, armed once per load of this module, and only for a pane `/prs` opened.
+const armTimer = ($: EngineInterface) => {
+  if (isTimerOn) return
+  isTimerOn = true
+  $.clock.every(REFRESH_MS, () => void refresh($))
+}
+
 export const register: Register = on => {
-  let isTimerOn = false
+  loadId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+  isTimerOn = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'prs', description: 'Ouvre le panneau de vos PR ouvertes dans weeki-io' })
+    // A reload: the failed Clients get their next try, and a pane opened before it keeps refreshing.
+    await update($, faultedBands, () => [])
+    const state = await read($, load)
+    if (state.status !== 'idle') {
+      // A refresh the reload cut short left nothing running.
+      if (state.isLoading) await update($, load, (current): PrLoad => ({ ...current, isLoading: false }))
+      armTimer($)
+    }
     return next(e)
   })
 
@@ -264,15 +286,13 @@ export const register: Register = on => {
       await update($, repoRows, () => ({}))
       await update($, closedSections, () => [])
       await update($, mode, () => 'all')
+      await update($, faultedBands, () => [])
       await closeHidden($, (await read($, load)).prs)
     })
     isOpening = true
     const { isPlaced } = await $.ui.open({ id: PANE, title: 'Pull requests' })
     void refresh($)
-    if (!isTimerOn) {
-      isTimerOn = true
-      $.clock.every(REFRESH_MS, () => void refresh($))
-    }
+    armTimer($)
     return { text: isPlaced ? 'Panneau des PR ouvert.' : 'Aucune surface ne peut afficher le panneau des PR.' }
   })
 
@@ -309,10 +329,10 @@ export const register: Register = on => {
   })
 
   // A band's Client failed: the engine leaves it out and does not draw it again, so the band would no longer press.
-  // Remember it; the next drawing gives that band its Button.
+  // Remember it for this load; the next drawing gives that band its Button.
   on('ui.fault', async ($, e, next) => {
     if (e.requestId === PANE && e.element.startsWith('band:')) {
-      await update($, faultedBands, keys => (keys.includes(e.element) ? keys : [...keys, e.element]))
+      await update($, faultedBands, records => withFault(records, loadId, e.element))
     }
     return next(e)
   })
@@ -375,7 +395,7 @@ export const register: Register = on => {
       ) : null
     const faulted = await read($, faultedBands)
     /** Whether the control `key` is drawn as a pressable band: desktop, and its Client never failed. */
-    const isBand = (key: string) => Client !== undefined && !faulted.includes(`band:${key}`)
+    const isBand = (key: string) => Client !== undefined && !isFaulted(faulted, loadId, `band:${key}`)
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)

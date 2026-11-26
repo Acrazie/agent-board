@@ -4,6 +4,7 @@ import type { Mounted } from 'claude-code/testing'
 
 import { FETCH_ARGV, ID_SHAPE, THREADS_ARGV } from '../hooks/github'
 import { clockTime } from '../hooks/register'
+import { isFaulted, withFault } from '../hooks/faults'
 
 const PANE = {
   plugin: 'pr-board',
@@ -2016,6 +2017,21 @@ for (const surfaces of [['vscode'], ['terminal', 'mobile']] as const) {
   })
 }
 
+test('a band fault holds for the load it was heard in only, and for that band only', () => {
+  const first = withFault([], 'load-1', 'band:repo:open:weeki-io/weeki_agents_api')
+  expect(isFaulted(first, 'load-1', 'band:repo:open:weeki-io/weeki_agents_api')).toBe(true)
+  // The other bands keep their Client.
+  expect(isFaulted(first, 'load-1', 'band:repo:open:weeki-io/weeki_map_api')).toBe(false)
+  expect(isFaulted(first, 'load-1', 'band:refresh')).toBe(false)
+  // Heard twice, recorded once.
+  expect(withFault(first, 'load-1', 'band:repo:open:weeki-io/weeki_agents_api')).toEqual(first)
+  // After a reload the old record no longer holds, and the next fault drops it.
+  expect(isFaulted(first, 'load-2', 'band:repo:open:weeki-io/weeki_agents_api')).toBe(false)
+  const second = withFault(first, 'load-2', 'band:refresh')
+  expect(second).toHaveLength(1)
+  expect(isFaulted(second, 'load-2', 'band:refresh')).toBe(true)
+})
+
 test('a long repository name is cut at its end inside the row, on the band and on the Button fallback', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const long: Raw = { id: 'PLONG', number: 17, title: 'dataset', repo: 'weeki_dataset_api_symfony', updatedAt: '2026-11-26T09:00:00Z' }
@@ -2042,4 +2058,31 @@ test('a long repository name is cut at its end inside the row, on the band and o
     }
     await ui.unmount()
   }
+})
+
+test('session.start after /prs keeps one 2-minute refresh and clears a refresh a reload cut short; never polls a pane never opened', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const w = world(on, { current: ok(TODAY) })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await clock.advance(240_000)
+  expect(w.calls).toHaveLength(0)
+
+  await $.command.run(PRS)
+  await clock.settle()
+  expect(w.calls).toHaveLength(1)
+  // A refresh still waiting on gh when the session starts again, as after a reload.
+  const answer = w.hold('gh')
+  const tick = clock.advance(120_000)
+  await answer.reached
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
+  answer.open()
+  await tick
+  // One timer, not two.
+  const before = w.calls.length
+  await clock.advance(120_000)
+  expect(w.calls.length).toBe(before + 1)
+  await ui.unmount()
 })
