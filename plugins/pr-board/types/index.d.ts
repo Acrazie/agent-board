@@ -25,7 +25,10 @@ export type Pr = {
 }
 
 export type PrLoad = {
-  status: 'idle' | 'loading' | 'ok' | 'error'
+  /** `idle` until the first answer; later what the last refresh found. */
+  status: 'idle' | 'ok' | 'error'
+  /** A refresh is running; what `status` shows stays drawn meanwhile. */
+  isLoading: boolean
   prs: Pr[]
   login?: string
   fetchedAt?: string

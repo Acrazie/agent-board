@@ -88,6 +88,8 @@ const TODAY: Raw[] = [
 ]
 
 type Gh = { exitCode: number; stdout: string; stderr: string } | Error
+// Set to hold gh's next answer until the test calls it.
+const hold: { release?: () => void; gate?: Promise<void> } = {}
 
 // Stands for the engine beneath the plugin: gh answers `gh.current`, the store is a map.
 const world = (on: On, gh: { current: Gh }) => {
@@ -99,8 +101,9 @@ const world = (on: On, gh: { current: Gh }) => {
     forbidden.push(name)
     throw new Error(`${name} fired`)
   }
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     calls.push(e.argv)
+    await hold.gate
     return gh.current instanceof Error ? { deny: gh.current.message } : { value: { ...gh.current, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('store.get', (_, e) => ({ value: store.get(e.key) }))
@@ -347,4 +350,36 @@ test('the pane does not open and gh does not run at session start', async ($, on
 
   expect(w.opened).toEqual([])
   expect(w.calls).toHaveLength(0)
+})
+
+test('a refresh keeps the list and the open expansion drawn, and says so in the header only', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pr:P67' })
+  expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
+
+  // The 2-minute tick starts a refresh that gh has not answered yet.
+  hold.gate = new Promise<void>(resolve => {
+    hold.release = resolve
+  })
+  const tick = clock.advance(120_000)
+  await clock.settle()
+  const during = ui
+  expect(await during.find({ type: 'Text', text: /actualisation/ })).toBeDefined()
+  expect(await during.find({ type: 'Text', text: /Chargement des PR/ })).toBeUndefined()
+  expect(await during.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
+  expect(await during.find({ type: 'Text', text: CRAFTED })).toBeDefined()
+  expect(await during.find({ type: 'Link' })).toBeDefined()
+
+  hold.release?.()
+  hold.gate = undefined
+  await tick
+  expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
+  await ui.unmount()
 })

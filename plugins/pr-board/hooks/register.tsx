@@ -8,7 +8,7 @@ const PANE = 'pr-board'
 const REFRESH_MS = 2 * 60 * 1000
 const SEEN_KEY = 'seen'
 
-const load = atom({ plugin: 'pr-board', key: 'load' } as const, { status: 'idle', prs: [] } as PrLoad)
+const load = atom({ plugin: 'pr-board', key: 'load' } as const, { status: 'idle', isLoading: false, prs: [] } as PrLoad)
 const seen = atom({ plugin: 'pr-board', key: 'seen' } as const, {} as Record<string, string>)
 const expanded = atom({ plugin: 'pr-board', key: 'expanded' } as const, null as string | null)
 
@@ -37,7 +37,7 @@ const refresh = async ($: EngineInterface) => {
   if (isRefreshing) return
   isRefreshing = true
   try {
-    await update($, load, (state): PrLoad => ({ ...state, status: 'loading' }))
+    await update($, load, (state): PrLoad => ({ ...state, isLoading: true }))
     let next: PrLoad
     try {
       const run = await $.process.run([...FETCH_ARGV], { timeoutMs: 30_000 })
@@ -46,9 +46,9 @@ const refresh = async ($: EngineInterface) => {
         throw new Error(`gh a échoué : ${reason}`)
       }
       const { login, prs } = parseSearch(run.stdout)
-      next = { status: 'ok', prs, login, fetchedAt: new Date(await $.clock.now()).toISOString() }
+      next = { status: 'ok', isLoading: false, prs, login, fetchedAt: new Date(await $.clock.now()).toISOString() }
     } catch (error) {
-      next = { status: 'error', prs: [], error: error instanceof Error ? error.message : String(error) }
+      next = { status: 'error', isLoading: false, prs: [], error: error instanceof Error ? error.message : String(error) }
     }
     await update($, load, () => next)
     if (next.status === 'ok') {
@@ -104,7 +104,7 @@ export const register: Register = on => {
           Actualiser
         </Button>
         <Text dimColor>
-          {state.status === 'loading' ? 'actualisation…' : state.fetchedAt ? `à jour ${time(state.fetchedAt)} UTC` : ''}
+          {state.isLoading ? 'actualisation…' : state.fetchedAt ? `à jour ${time(state.fetchedAt)} UTC` : ''}
         </Text>
       </Box>
     )
