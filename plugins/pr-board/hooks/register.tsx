@@ -210,13 +210,22 @@ export const register: Register = on => {
   // for a row the pane draws now. The key names the row; the posted data is only checked for its shape.
   on('ui.message', async ($, e, next) => {
     const isToggle = e.data !== null && typeof e.data === 'object' && (e.data as { toggle?: unknown }).toggle === true
-    if (e.requestId === PANE && e.module.endsWith('band.tsx') && e.element.startsWith('band:') && isToggle) {
-      const rest = e.element.slice('band:'.length)
-      const cut = rest.indexOf(':')
-      const section = rest.slice(0, cut)
-      const repo = rest.slice(cut + 1)
-      const prs = (await read($, load)).prs.filter(pr => sectionOf(pr) === section && pr.repo === repo)
-      if (prs.length > 0) await toggleRepo($, section as SectionId, repo, prs.map(pr => pr.id))
+    if (e.requestId === PANE && e.module.endsWith('band.tsx') && isToggle) {
+      const { prs } = await read($, load)
+      if (e.element.startsWith('band:repo:')) {
+        const rest = e.element.slice('band:repo:'.length)
+        const cut = rest.indexOf(':')
+        const section = rest.slice(0, cut)
+        const repo = rest.slice(cut + 1)
+        const inRow = prs.filter(pr => sectionOf(pr) === section && pr.repo === repo)
+        if (inRow.length > 0) void toggleRepo($, section as SectionId, repo, inRow.map(pr => pr.id))
+      } else if (e.element.startsWith('band:pr:')) {
+        // Only a PR the pane draws now: its section and its repository row are open. The toggle is not awaited: while
+        // this hook is still running, a read through its `$` returned the state as it was when the message came, so a
+        // toggle queued behind a refresh stamped the list the refresh had just replaced (seen in the tests).
+        const pr = prs.find(one => one.id === e.element.slice('band:pr:'.length))
+        if (pr && !(await read($, closedSections)).includes(sectionOf(pr)) && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo)) void toggle($, pr)
+      }
     }
     return next(e)
   })
@@ -240,6 +249,32 @@ export const register: Register = on => {
         {after}
       </Box>
     )
+    // On desktop, a control drawn as a full-width rounded grey band keyed `line:<key>`: the chevron, what it shows,
+    // then an empty Client `band:<key>` laid over the whole band that takes the press (see `ui.message`).
+    const band = (key: string, isOpen: boolean, ...shown: (ReturnType<typeof Box> | null)[]) =>
+      Client ? (
+        <Box
+          key={`line:${key}`}
+          position="relative"
+          flexDirection="row"
+          alignItems="center"
+          columnGap="xs"
+          width="100%"
+          backgroundColor={BAND}
+          borderStyle="round"
+          borderColor={BAND}
+          paddingX="sm"
+          paddingY="xs"
+          hover={{ backgroundColor: BAND_HOVER, borderColor: BAND_HOVER }}
+        >
+          {chevron(isOpen)}
+          {shown}
+          {/* Last, so it lies over everything before it; it draws nothing, so all of them stay visible. */}
+          <Box position="absolute" top={0} left={0} width="100%" height="100%">
+            <Client key={`band:${key}`} module="./band.tsx" width="100%" height="100%" />
+          </Box>
+        </Box>
+      ) : null
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
@@ -305,15 +340,17 @@ export const register: Register = on => {
           {badged(pr) ? ' · ' : ''}
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
-        {line(
-          `pr:${pr.id}`,
-          openId === pr.id,
-          <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
-            <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-              {`${glyph(openId === pr.id)}Détails`}
-            </Button>
-          </Box>,
-        )}
+        {Client
+          ? band(`pr:${pr.id}`, openId === pr.id, <Text dimColor>Détails</Text>)
+          : line(
+              `pr:${pr.id}`,
+              openId === pr.id,
+              <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
+                <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+                  {`${glyph(openId === pr.id)}Détails`}
+                </Button>
+              </Box>,
+            )}
         {openId === pr.id && (
           <Box key={`details:${pr.id}`} flexDirection="column" paddingLeft={2}>
             {pr.activity.length === 0 && <Text dimColor>Aucune revue ni commentaire.</Text>}
@@ -336,35 +373,34 @@ export const register: Register = on => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-          {/* Off the terminal, a full-width rounded grey band. On desktop the name is a Text and an empty Client
-              laid over the whole band takes the press (see `ui.message`); elsewhere the name is a Button. */}
-          <Box
-            key={`line:repo:${section}:${repo}`}
-            flexDirection="row"
-            alignItems="center"
-            columnGap="xs"
-            width="100%"
-            {...(Svg ? { backgroundColor: BAND, borderStyle: 'round', borderColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
-            {...(Client ? { position: 'relative', hover: { backgroundColor: BAND_HOVER, borderColor: BAND_HOVER } } : {})}
-          >
-            {chevron(isOpen)}
-            {Client ? (
-              <Text>{shortRepo(repo)}</Text>
-            ) : (
+          {Client ? (
+            band(
+              `repo:${section}:${repo}`,
+              isOpen,
+              <Text>{shortRepo(repo)}</Text>,
+              <Box flexGrow={1} />,
+              <Text dimColor>{prs.length}</Text>,
+              !isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null,
+            )
+          ) : (
+            // A full-width rounded grey band where Svg is drawn, a plain line on the terminal; the name Button presses.
+            <Box
+              key={`line:repo:${section}:${repo}`}
+              flexDirection="row"
+              alignItems="center"
+              columnGap="xs"
+              width="100%"
+              {...(Svg ? { backgroundColor: BAND, borderStyle: 'round', borderColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
+            >
+              {chevron(isOpen)}
               <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
                 {`${glyph(isOpen)}${shortRepo(repo)}`}
               </Button>
-            )}
-            {Svg ? <Box flexGrow={1} /> : null}
-            <Text dimColor>{prs.length}</Text>
-            {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
-            {Client ? (
-              // Last, so it lies over everything before it; it draws nothing, so all of them stay visible.
-              <Box position="absolute" top={0} left={0} width="100%" height="100%">
-                <Client key={`band:${section}:${repo}`} module="./band.tsx" width="100%" height="100%" />
-              </Box>
-            ) : null}
-          </Box>
+              {Svg ? <Box flexGrow={1} /> : null}
+              <Text dimColor>{prs.length}</Text>
+              {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
+            </Box>
+          )}
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>
               {prs.map(prRow)}

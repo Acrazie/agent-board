@@ -188,11 +188,9 @@ type Ui = Pick<Mounted, 'find' | 'findAll' | 'press' | 'drawn'> & { post?: (data
 const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new RegExp(`^#${number} `) })
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
-/** The keys of the Buttons, or of the repository rows (a Button or, on desktop, a band), that start with `prefix`. */
+/** The keys of the drawn controls (a Button, or on desktop a band), read from their `line:` Boxes, that start with `prefix`. */
 const keysOf = async (ui: Ui, prefix: string) =>
-  prefix.startsWith('repo:')
-    ? (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(key => key.startsWith(`line:${prefix}`)).map(key => key.slice('line:'.length))
-    : (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
+  (await ui.findAll({ type: 'Box' })).map(b => b.key ?? '').filter(key => key.startsWith(`line:${prefix}`)).map(key => key.slice('line:'.length))
 type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
 /** A control line read as one string: the chevron as a glyph (from the Svg, or already in the terminal label), the label, then the Texts drawn apart. */
 const lineText = (node: unknown): string[] => {
@@ -212,13 +210,14 @@ const rowOf = async (ui: Ui, key: string) => (await chevronRows(ui)).find(row =>
 /** The section headers, as drawn: `∨ Ouvertes 2`. */
 const headsOf = async (ui: Ui) => (await chevronRows(ui)).filter(row => row.key.startsWith('head:')).map(row => row.text)
 /**
- * Toggles a repository row as a person would: its name Button where one is
- * drawn, or on desktop, a press posted by the Client laid over the band.
+ * Presses a control (a repository row or Détails) as a person would: its Button
+ * where one is drawn, or on desktop, a press posted by the Client laid over its band.
  */
-const toggleRow = async (ui: Ui, key: string) => {
+const pressControl = async (ui: Ui, key: string) => {
   if (await ui.find({ type: 'Button', key })) await ui.press({ key })
-  else await ui.post?.({ toggle: true }, { in: `band:${key.slice('repo:'.length)}` })
+  else await ui.post?.({ toggle: true }, { in: `band:${key}` })
 }
+const toggleRow = pressControl
 /** The node of the drawn tree whose props carry `key`. */
 const drawnByKey = (node: unknown, key: string): { hover?: unknown } | undefined => {
   if (node === null || typeof node !== 'object') return undefined
@@ -392,13 +391,13 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await toggleRow(ui, repoKey('open', 'weeki_atlas_api'))
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   expect(await openDetails(ui)).toBeDefined()
   // Collapsing the section closes it at once, as a repository collapse does.
   await ui.press({ key: 'head:open' })
   await ui.press({ key: 'head:open' })
   expect(await openDetails(ui)).toBeUndefined()
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   await ui.press({ key: 'head:open' })
 
   await clock.set(Date.parse('2026-11-26T11:31:00Z'))
@@ -450,8 +449,23 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       expect(line.props.width).toBe('100%')
       expect(line.props.alignItems).toBe('center')
     }
-    // Détails keeps its growing wrapper.
-    expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
+    const details = lines.find(line => line.key === 'line:pr:P67')!
+    if (surface === 'desktop') {
+      // Détails is a band too: chevron, the dim text, and the Client cover; no Button, and the hover of a band.
+      expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeUndefined()
+      const parts = details.children as Drawn[]
+      expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box'])
+      expect(parts[1]?.props?.dimColor).toBe(true)
+      expect(lineText(parts[1]).join('')).toBe('Détails')
+      expect(details.props).toMatchObject({ position: 'relative', width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
+      expect(drawnByKey(await ui.drawn(), details.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
+      expect(parts[2]?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
+      expect((parts[2]?.children?.[0] as Drawn).props).toMatchObject({ key: 'band:pr:P67', module: 'hooks/band.tsx', width: '100%', height: '100%' })
+    } else {
+      // Elsewhere Détails keeps its Button in a growing wrapper.
+      expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
+      expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('Détails')
+    }
     // Each repository row is a full-width rounded grey band with the count at its right edge.
     const bands = lines.filter(line => line.key?.startsWith('line:repo:'))
     expect(bands).toHaveLength(4)
@@ -484,9 +498,9 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
     if (surface === 'desktop') {
       // Opening Détails turns its chevron down; the label stays the same.
-      await ui.press({ key: 'pr:P67' })
+      await pressControl(ui, 'pr:P67')
       expect(await rowOf(ui, 'pr:P67')).toBe('∨ Détails')
-      expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('Détails')
+      expect(await ui.find({ type: 'Text', text: 'Détails' })).toBeDefined()
     }
     await ui.unmount()
   }
@@ -516,7 +530,7 @@ test('desktop: a press anywhere on a repository band toggles the row through the
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
-  const band = 'band:open:weeki-io/weeki_atlas_api'
+  const band = 'band:repo:open:weeki-io/weeki_atlas_api'
   // The region draws no text: the count and the badge are the band's own Texts, after it.
   expect(await ui.findAll({ type: 'Text', in: band })).toEqual([])
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
@@ -538,7 +552,7 @@ test('desktop: a press anywhere on a repository band toggles the row through the
   expect(w.store.get('seen')).toEqual({})
 
   // Collapsing from the region closes the PR expanded in it, as the Button does.
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   expect(await openDetails(ui)).toBeDefined()
   await ui.post({ toggle: true }, { in: band })
   await clock.settle()
@@ -555,6 +569,35 @@ test('desktop: a press anywhere on a repository band toggles the row through the
   await clock.settle()
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1')
   expect([...w.store.keys()]).toEqual(['seen'])
+  await ui.unmount()
+})
+
+test('desktop: Détails is a band whose Client post opens and closes the expansion and clears the badge, as its Button did', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
+  const gh = { current: ok(commented) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // P7's repository is collapsed, so its Détails band is not drawn.
+  expect(await keysOf(ui, 'pr:P7')).toEqual([])
+  await toggleRow(ui, repoKey('open', 'weeki_atlas_api'))
+  expect(await isBadged(ui, 7)).toBe(true)
+  // A post of another shape changes nothing.
+  await ui.post({ toggle: 1 }, { in: 'band:pr:P7' })
+  await clock.settle()
+  expect(await openDetails(ui)).toBeUndefined()
+  expect(w.store.get('seen')).toEqual({})
+  await ui.post({ toggle: true }, { in: 'band:pr:P7' })
+  await clock.settle()
+  expect((await openDetails(ui))?.key).toBe('details:P7')
+  expect(await rowOf(ui, 'pr:P7')).toBe('∨ Détails')
+  expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
+  await ui.post({ toggle: true }, { in: 'band:pr:P7' })
+  await clock.settle()
+  expect(await openDetails(ui)).toBeUndefined()
+  expect(await isBadged(ui, 7)).toBe(false)
   await ui.unmount()
 })
 
@@ -593,9 +636,9 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   expect(w.store.get('seen')).toEqual({})
 
   await toggleRow(ui, row)
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   expect(await isBadged(ui, 7)).toBe(false)
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   await toggleRow(ui, row)
   expect(await rowText()).toBe('› weeki_atlas_api 1')
   expect(Object.keys(w.store.get('seen') as object)).toEqual(['P7'])
@@ -619,7 +662,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
   await toggleRow(ui, row)
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
 
   // The pane is opened again: its repository is collapsed, and the refresh brings new feedback.
@@ -652,7 +695,7 @@ for (const [move, before, after] of [
 
     const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
     await expandAll(ui)
-    await ui.press({ key: 'pr:P67' })
+    await pressControl(ui, 'pr:P67')
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
 
     await clock.set(Date.parse('2026-11-26T11:31:00Z'))
@@ -678,7 +721,7 @@ test('collapsing a repository closes the PR expanded in it, so a refresh never c
   await clock.settle()
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   await toggleRow(ui, repoKey('fix', 'weeki_atlas'))
   gh.current = ok(withReview())
   await ui.press({ key: 'refresh' })
@@ -704,10 +747,10 @@ test('badge: set by a review from someone else, not by my own comment, cleared o
   expect(await badge('pr:P6')).toBe(false)
   expect(await badge('pr:P7')).toBe(false)
 
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   expect(await badge('pr:P67')).toBe(false)
   // Collapsing keeps it cleared, and so does the 2-minute refresh.
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   await clock.advance(120_000)
   expect(await badge('pr:P67')).toBe(false)
 
@@ -753,7 +796,7 @@ test('the expansion shows author, text, file:line and a link, a crafted comment 
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    await ui.press({ key: 'pr:P67' })
+    await pressControl(ui, 'pr:P67')
 
     expect(await openDetails(ui)).toBeDefined()
     expect(await ui.find({ text: /Ouvrir sur GitHub/ })).toBeUndefined()
@@ -764,7 +807,7 @@ test('the expansion shows author, text, file:line and a link, a crafted comment 
     expect((await ui.find({ type: 'Text', text: CRAFTED }))?.text).toBe(CRAFTED)
     // It is drawn as a plain Text: no Markdown element, no Input, no handler to run it.
     expect(await ui.find({ type: 'Markdown' })).toBeUndefined()
-    await ui.press({ key: 'pr:P67' })
+    await pressControl(ui, 'pr:P67')
     await ui.unmount()
   }
   // Only the single gh read ran; no model call and no prompt hook fired.
@@ -790,7 +833,7 @@ test('the expansion lists at most the 20 most recent items, newest first', async
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await expandAll(ui)
-  await ui.press({ key: 'pr:PM' })
+  await pressControl(ui, 'pr:PM')
   const bodies = (await ui.findAll({ type: 'Text', text: /^(comment|review) \d+$/ })).map(t => t.text)
   expect(bodies).toHaveLength(20)
   // The five reviews (09:xx) are newer than every comment (08:xx).
@@ -883,7 +926,7 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await expandAll(ui)
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
 
   // The 2-minute tick starts a refresh that gh has not answered yet.
@@ -893,7 +936,7 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
   await clock.settle()
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Chargement des PR/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
+  expect(await keysOf(ui, 'pr:P7')).toEqual(['pr:P7'])
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
   expect(await openDetails(ui)).toBeDefined()
 
@@ -922,8 +965,8 @@ test('expanding stamps what the pane shows, not the clock: a review posted betwe
   // A review is posted at 11:30, after the fetch. The click comes at 11:40, and no refresh has shown the review yet.
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await clock.set(Date.parse('2026-11-26T11:40:00Z'))
-  await ui.press({ key: 'pr:P67' })
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
+  await pressControl(ui, 'pr:P67')
   // Stamped with the newest item shown (10:30, my own comment), not with the click time.
   expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
 
@@ -947,7 +990,7 @@ test('a click that lands while a refresh writes the seen state is stamped from w
   const tick = clock.advance(120_000)
   await writing.reached
   // The click comes now, while the pane still holds the old list.
-  const click = ui.press({ key: 'pr:P67' })
+  const click = pressControl(ui, 'pr:P67')
   await clock.settle()
   writing.open()
   await tick
@@ -955,7 +998,7 @@ test('a click that lands while a refresh writes the seen state is stamped from w
 
   // The pane now shows the review, and collapsing keeps the PR quiet: the stamp covers what was shown.
   expect(await ui.find({ type: 'Text', text: 'late review' })).toBeDefined()
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   expect(await isBadged(ui, 67)).toBe(false)
   expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T11:30:00Z')
   await ui.unmount()
@@ -975,7 +1018,7 @@ test('a click during a refresh and the refresh both keep their seen changes', as
   await answer.reached
   await clock.settle()
   // The pane is still drawn: click a PR while gh has not answered.
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   answer.open()
   await tick
   await clock.settle()
@@ -995,14 +1038,14 @@ test('another session\'s seen stamps are merged, never overwritten, and only PRs
   await clock.settle()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await expandAll(ui)
-  await ui.press({ key: 'pr:P67' })
+  await pressControl(ui, 'pr:P67')
   expect(w.store.get('seen')).toEqual({ P67: '2026-11-26T10:30:00Z' })
 
   // Another session shares the store: it saw P67 later, P6 and a PR that has left.
   w.store.set('seen', { P67: '2026-11-26T10:45:00Z', P6: '2026-11-26T09:00:00Z', P7: '2026-11-26T09:00:00Z', GONE: '2026-01-01T00:00:00Z' })
 
   // This session expands another PR and refreshes: nothing the other session wrote for an open PR is lost.
-  await ui.press({ key: 'pr:P6' })
+  await pressControl(ui, 'pr:P6')
   expect(w.store.get('seen')).toEqual({
     P67: '2026-11-26T10:45:00Z',
     P6: '2026-11-26T09:00:00Z',
@@ -1030,13 +1073,13 @@ test('a store that fails never leaves the pane on "actualisation…" or stops a 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await expandAll(ui)
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeDefined()
-  await ui.press({ key: 'pr:P67' })
+  expect(await keysOf(ui, 'pr:P67')).toEqual(['pr:P67'])
+  await pressControl(ui, 'pr:P67')
   expect(await openDetails(ui)).toBeDefined()
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
   await ui.press({ key: 'refresh' })
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', key: 'pr:P7' })).toBeDefined()
+  expect(await keysOf(ui, 'pr:P7')).toEqual(['pr:P7'])
   await ui.unmount()
 })
 
@@ -1052,7 +1095,7 @@ test('a stored time that is not a time is ignored and never written back', async
   // P67 has foreign activity and no valid stamp: still new.
   expect(await isBadged(ui, 67)).toBe(true)
   await expandAll(ui)
-  await ui.press({ key: 'pr:P18' })
+  await pressControl(ui, 'pr:P18')
   const stored = w.store.get('seen') as Record<string, string>
   expect(Object.values(stored).every(at => Number.isFinite(Date.parse(at)))).toBe(true)
   await ui.unmount()
@@ -1067,7 +1110,7 @@ test('a comment posted while a refresh runs is not swallowed for a PR that had n
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   // P7 has no activity and is open on screen when the next refresh runs.
   await expandAll(ui)
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
 
   const answer = w.hold('gh')
   const tick = clock.advance(120_000)
@@ -1076,7 +1119,7 @@ test('a comment posted while a refresh runs is not swallowed for a PR that had n
   await clock.set(Date.parse('2026-11-26T11:03:00Z'))
   answer.open()
   await tick
-  await ui.press({ key: 'pr:P7' })
+  await pressControl(ui, 'pr:P7')
 
   gh.current = ok(
     TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CX', author: 'Yann', body: 'during the fetch', at: '2026-11-26T11:02:30Z' }] } : raw)),
@@ -1122,7 +1165,7 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   expect((await rowOf(ui, repoKey('open', 'weeki_map_api')))).toMatch(/nouveau/)
   await expandAll(ui)
   expect(await isBadged(ui, 3)).toBe(true)
-  await ui.press({ key: 'pr:PT' })
+  await pressControl(ui, 'pr:PT')
   const bodies = (await ui.findAll({ type: 'Text', text: /^(on the first page|reply on an older thread|newest of all)$/ })).map(t => t.text)
   expect(bodies).toEqual(['newest of all', 'reply on an older thread', 'on the first page'])
   await ui.unmount()
@@ -1175,7 +1218,7 @@ test('no control character from GitHub reaches the drawn tree, on any surface', 
     const press = surface === 'terminal' || surface === 'desktop'
     if (press) {
       await expandAll(ui)
-      await ui.press({ key: 'pr:PE' })
+      await pressControl(ui, 'pr:PE')
     }
     const strings = stringsOf(await ui.drawn())
     expect(strings.filter(text => CONTROLS.test(text))).toEqual([])
@@ -1183,7 +1226,7 @@ test('no control character from GitHub reaches the drawn tree, on any surface', 
       // Newline and tab survive, the rest of the visible text is kept as written.
       expect(await ui.find({ type: 'Text', text: 'line1\nline2\ttabbed[31m red ]52;c;ZXZpbA==end' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /src\/\[1mfile\.ts:7/ })).toBeDefined()
-      await ui.press({ key: 'pr:PE' })
+      await pressControl(ui, 'pr:PE')
     }
     await ui.unmount()
   }
@@ -1230,7 +1273,7 @@ test('without a reviewDecision, a reviewer\'s latest decisive review sends the P
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await headsOf(ui)).toEqual(['∨ À corriger 2', '∨ Ouvertes 4'])
   await expandAll(ui)
-  const rows = (await ui.findAll({ type: 'Button' })).map(b => b.key).filter(key => key?.startsWith('pr:'))
+  const rows = await keysOf(ui, 'pr:')
   expect(new Set(rows.slice(0, 2))).toEqual(new Set(['pr:S1', 'pr:S5']))
   expect(new Set(rows.slice(2))).toEqual(new Set(['pr:S2', 'pr:S3', 'pr:S4', 'pr:S6']))
   await ui.unmount()
