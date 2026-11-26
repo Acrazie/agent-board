@@ -328,11 +328,19 @@ export const register: Register = on => {
     const glyph = (isOpen: boolean) => (Svg ? '' : isOpen ? '∨ ' : '› ')
     const chevron = (isOpen: boolean) =>
       Svg ? <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} /> : null
+    // What may give way when the pane is narrow: it shrinks, clipped, so a long name loses its end and never pushes
+    // the chevron or the count out of the row. `isWide` also lets it take the rest of the row.
+    const shrinking = (child: ReturnType<typeof Box>, isWide = false) => (
+      <Box flexShrink={1} minWidth={0} overflow="hidden" {...(isWide ? { flexGrow: 1, flexDirection: 'column' as const, alignItems: 'stretch' as const } : {})}>
+        {child}
+      </Box>
+    )
     // One control line, keyed `line:<button key>`: the chevron, the Button, then what is drawn apart from its label.
-    const line = (key: string, isOpen: boolean, control: ReturnType<typeof Box>, ...after: (ReturnType<typeof Text> | null)[]) => (
+    // No band look: only the Button presses, so nothing suggests the whole row does.
+    const line = (key: string, isOpen: boolean, control: ReturnType<typeof Box>, isWide: boolean, ...after: (ReturnType<typeof Text> | null)[]) => (
       <Box key={`line:${key}`} flexDirection="row" alignItems="center" columnGap="xs" width="100%">
         {chevron(isOpen)}
-        {control}
+        {shrinking(control, isWide)}
         {after}
       </Box>
     )
@@ -507,11 +515,10 @@ export const register: Register = on => {
           : line(
               `pr:${pr.id}`,
               openId === pr.id,
-              <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
-                <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-                  {`${glyph(openId === pr.id)}Détails`}
-                </Button>
-              </Box>,
+              <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+                {`${glyph(openId === pr.id)}Détails`}
+              </Button>,
+              true,
             )}
         {openId === pr.id && (
           <Box key={`details:${pr.id}`} flexDirection="column" paddingLeft={2}>
@@ -539,25 +546,21 @@ export const register: Register = on => {
             band(
               `repo:${section}:${repo}`,
               isOpen,
-              <Text>{shortRepo(repo)}</Text>,
+              shrinking(<Text wrap="truncate-end">{shortRepo(repo)}</Text>),
               <Box flexGrow={1} />,
               <Text dimColor>{prs.length}</Text>,
               !isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null,
             )
           ) : (
-            // A full-width rounded grey band where Svg is drawn, a plain line on the terminal; the name Button presses.
-            <Box
-              key={`line:repo:${section}:${repo}`}
-              flexDirection="row"
-              alignItems="center"
-              columnGap="xs"
-              width="100%"
-              {...(Svg ? { backgroundColor: BAND, borderStyle: 'round', borderColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
-            >
+            // Where no band Client is drawn, a plain line like the terminal's: the name Button presses, and nothing
+            // looks like a whole-band control.
+            <Box key={`line:repo:${section}:${repo}`} flexDirection="row" alignItems="center" columnGap="xs" width="100%">
               {chevron(isOpen)}
-              <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-                {`${glyph(isOpen)}${shortRepo(repo)}`}
-              </Button>
+              {shrinking(
+                <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+                  {`${glyph(isOpen)}${shortRepo(repo)}`}
+                </Button>,
+              )}
               {Svg ? <Box flexGrow={1} /> : null}
               <Text dimColor>{prs.length}</Text>
               {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
@@ -585,6 +588,7 @@ export const register: Register = on => {
                 <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
                   {`${glyph(!closed.includes(section.id))}${section.title}`}
                 </Button>,
+                false,
                 <Text dimColor>{section.prs.length}</Text>,
                 // A collapsed section carries the badge of the PRs it hides, as a collapsed repository does.
                 closed.includes(section.id) && section.prs.some(badged) ? <Text color="yellow">nouveau</Text> : null,

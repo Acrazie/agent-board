@@ -516,16 +516,19 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
       expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
       expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('Détails')
     }
-    // Each repository row is a full-width rounded grey band with the count at its right edge.
+    // Each repository row is full width with the count at its right edge; on desktop a rounded grey band.
     const bands = lines.filter(line => line.key?.startsWith('line:repo:'))
     expect(bands).toHaveLength(4)
     for (const band of bands) {
-      // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
-      expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
       const { parts, cover } = partsOf(band)
+      // The name gives way first: it sits in a Box that shrinks and clips, so a long name loses its end, not the row.
+      expect(parts[1]?.props).toMatchObject({ flexShrink: 1, minWidth: 0, overflow: 'hidden' })
       if (surface === 'desktop') {
-        // No name Button: the name is a Text, and an empty Client pinned over the whole band, padding included, takes the press.
-        expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text'])
+        // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
+        expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
+        // No name Button: the name is a Text cut at its end, and an empty Client pinned over the whole band, padding included, takes the press.
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Box', 'Box', 'Text'])
+        expect((parts[1]?.children?.[0] as Drawn).props?.wrap).toBe('truncate-end')
         expect(await ui.find({ type: 'Button', key: band.key!.slice('line:'.length) })).toBeUndefined()
         expectBandShape(band)
         // The whole band lightens under the pointer (a hover is drawn beside the props, so it is read from the drawing).
@@ -533,10 +536,13 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
         expect(parts[2]?.props?.flexGrow).toBe(1)
         expectCover(cover, `band:${band.key!.slice('line:'.length)}`)
       } else {
+        // Where only the name Button presses, the row is a plain line: no band suggests a whole-row control.
         expect(band.props).toMatchObject({ alignItems: 'center', flexDirection: 'row' })
-        expect(band.props.paddingX).toBeDefined()
-        expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
-        expect(parts[1]?.props?.plain).toBe(true)
+        expect(band.props.backgroundColor).toBeUndefined()
+        expect(band.props.borderStyle).toBeUndefined()
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Box', 'Box', 'Text'])
+        expect((parts[1]?.children?.[0] as Drawn).type).toBe('Button')
+        expect((parts[1]?.children?.[0] as Drawn).props?.plain).toBe(true)
         expect(parts[2]?.props?.flexGrow).toBe(1)
         expect(drawnByKey(await ui.drawn(), band.key!)?.hover).toBeUndefined()
       }
@@ -583,7 +589,7 @@ test('desktop: a press anywhere on a repository band toggles the row through the
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
   const line = (await ui.findAll({ type: 'Box' })).find(box => box.key === `line:${row}`)!
   const { parts, cover } = partsOf(line as Drawn)
-  expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Text'])
+  expect(parts.map(child => child.type)).toEqual(['Svg', 'Box', 'Box', 'Text', 'Text'])
   expectCover(cover, band)
   // The module draws one empty Box with no height of its own, so it never sizes the region.
   expect((await ui.findAll({ type: 'Box', in: band })).map(box => box.props)).toEqual([{ width: '100%' }])
@@ -2009,3 +2015,31 @@ for (const surfaces of [['vscode'], ['terminal', 'mobile']] as const) {
     }
   })
 }
+
+test('a long repository name is cut at its end inside the row, on the band and on the Button fallback', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const long: Raw = { id: 'PLONG', number: 17, title: 'dataset', repo: 'weeki_dataset_api_symfony', updatedAt: '2026-11-26T09:00:00Z' }
+  world(on, { current: ok([long]) })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface, props: { ...PANE.props, bodyColumns: 24 } })
+    const row = (await ui.findAll({ type: 'Box' })).find(box => box.key === 'line:repo:open:weeki-io/weeki_dataset_api_symfony')!
+    const [chevronPart, name, spacer, count] = partsOf(row as Drawn).parts
+    expect(chevronPart?.type).toBe('Svg')
+    expect(name?.props).toMatchObject({ flexShrink: 1, minWidth: 0, overflow: 'hidden' })
+    expect(spacer?.props?.flexGrow).toBe(1)
+    expect(lineText(count).join('')).toBe('1')
+    const inner = name?.children?.[0] as Drawn
+    if (surface === 'desktop') expect(inner.props).toMatchObject({ wrap: 'truncate-end' })
+    else expect(inner.type).toBe('Button')
+    // The fallback still toggles the row.
+    if (surface !== 'desktop') {
+      await ui.press({ key: 'repo:open:weeki-io/weeki_dataset_api_symfony' })
+      expect(await rowOf(ui, 'repo:open:weeki-io/weeki_dataset_api_symfony')).toBe('∨ weeki_dataset_api_symfony 1')
+      await ui.press({ key: 'repo:open:weeki-io/weeki_dataset_api_symfony' })
+    }
+    await ui.unmount()
+  }
+})
