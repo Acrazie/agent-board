@@ -347,6 +347,74 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   await ui.unmount()
 })
 
+const lateFeedback = (raw: Raw, more: Partial<Raw> = {}): Raw => ({
+  ...raw,
+  ...more,
+  reviews: [...(raw.reviews ?? []), { id: 'RL', author: 'YannAndreWeeki', state: 'COMMENTED', body: 'late feedback', at: '2026-11-26T11:30:00Z' }],
+})
+
+test('reopening the pane closes an expanded PR its collapsed repository hides: new feedback keeps its badge and is not stamped', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const commented = TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T08:00:00Z' }] } : raw))
+  const gh = { current: ok(commented) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const row = repoKey('open', 'weeki_atlas_api')
+  await ui.press({ key: row })
+  await ui.press({ key: 'pr:P7' })
+  expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
+
+  // The pane is opened again: its repository is collapsed, and the refresh brings new feedback.
+  await clock.set(Date.parse('2026-11-26T11:31:00Z'))
+  gh.current = ok(commented.map(raw => (raw.id === 'P7' ? lateFeedback(raw) : raw)))
+  await $.command.run(PRS)
+  await clock.settle()
+  await clock.advance(120_000)
+
+  expect((await ui.find({ type: 'Button', key: row }))?.text).toBe('▸ weeki_atlas_api (1) nouveau')
+  expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
+  await ui.press({ key: row })
+  expect(await isBadged(ui, 7)).toBe(true)
+  expect(await ui.find({ type: 'Link' })).toBeUndefined()
+  await ui.unmount()
+})
+
+for (const [move, before, after] of [
+  ['an approval moves it from À corriger to Ouvertes', { reviewDecision: 'CHANGES_REQUESTED' }, { reviewDecision: 'APPROVED' }],
+  ['it goes from ready to draft', {}, { isDraft: true }],
+  ['it goes from draft to ready', { isDraft: true }, { isDraft: false }],
+] as const) {
+  test(`a refresh closes an expanded PR when ${move} into a collapsed repository: new feedback keeps its badge and is not stamped`, async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+    const start: Raw = { ...TODAY[0]!, reviewDecision: null, ...before }
+    const gh = { current: ok([start]) }
+    const w = world(on, gh)
+    await $.command.run(PRS)
+    await clock.settle()
+
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    await expandAll(ui)
+    await ui.press({ key: 'pr:P67' })
+    expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
+
+    await clock.set(Date.parse('2026-11-26T11:31:00Z'))
+    gh.current = ok([lateFeedback(start, after)])
+    await ui.press({ key: 'refresh' })
+
+    const rows = (await ui.findAll({ type: 'Button' })).filter(b => b.key?.startsWith('repo:'))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.text).toBe('▸ weeki_atlas (1) nouveau')
+    expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
+    await ui.press({ key: rows[0]!.key! })
+    expect(await isBadged(ui, 67)).toBe(true)
+    expect(await ui.find({ type: 'Link' })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
 test('collapsing a repository closes the PR expanded in it, so a refresh never clears a hidden badge', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
   const gh = { current: ok(TODAY) }

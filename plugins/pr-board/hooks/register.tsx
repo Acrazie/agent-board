@@ -31,6 +31,8 @@ type SectionId = 'fix' | 'open' | 'draft'
 /** À corriger's repositories start expanded, every other one collapsed. */
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
 
+const sectionOf = (pr: Pr): SectionId => (pr.needsChanges ? 'fix' : pr.isDraft ? 'draft' : 'open')
+
 /** PRs newest first, grouped by repository in the order of each one's newest PR. */
 const byRepo = (prs: Pr[]) => {
   const groups = new Map<string, Pr[]>()
@@ -91,6 +93,15 @@ const stamped = (current: Seen, pr: Pr | undefined): Seen => {
   return pr && at !== undefined ? laterOf(current, { [pr.id]: at }) : current
 }
 
+// The expanded PR counts as open only while its row is open in `prs`: a
+// reopened pane or a PR that changed section can hide it, and a hidden PR must
+// never be stamped as seen. Called inside the queue.
+const closeHidden = async ($: EngineInterface, prs: Pr[]) => {
+  const openId = await read($, expanded)
+  const pr = prs.find(one => one.id === openId)
+  if (openId !== null && !(pr && isRepoOpen(await read($, repoRows), sectionOf(pr), pr.repo))) await update($, expanded, () => null)
+}
+
 let isRefreshing = false
 
 const refresh = async ($: EngineInterface) => {
@@ -108,6 +119,7 @@ const refresh = async ($: EngineInterface) => {
     await inQueue(async () => {
       if (next.status === 'ok') {
         const { prs } = next
+        await closeHidden($, prs)
         const openId = await read($, expanded)
         // Drop the PRs absent from this fresh result, and count what an
         // expanded PR now shows as seen, before the list is published.
@@ -160,7 +172,10 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'prs' }, async $ => {
-    await update($, repoRows, () => ({}))
+    await inQueue(async () => {
+      await update($, repoRows, () => ({}))
+      await closeHidden($, (await read($, load)).prs)
+    })
     const { isPlaced } = await $.ui.open({ id: PANE, title: 'Pull requests' })
     void refresh($)
     if (!isTimerOn) {
@@ -221,9 +236,9 @@ export const register: Register = on => {
     const badged = (pr: Pr) => openId !== pr.id && isNew(pr, state.login, seenAt[pr.id])
 
     const sections: { id: SectionId; title: string; color?: 'red'; prs: Pr[] }[] = [
-      { id: 'fix', title: 'À corriger', color: 'red', prs: state.prs.filter(pr => pr.needsChanges) },
-      { id: 'open', title: 'Ouvertes', prs: state.prs.filter(pr => !pr.needsChanges && !pr.isDraft) },
-      { id: 'draft', title: 'Drafts', prs: state.prs.filter(pr => !pr.needsChanges && pr.isDraft) },
+      { id: 'fix', title: 'À corriger', color: 'red', prs: state.prs.filter(pr => sectionOf(pr) === 'fix') },
+      { id: 'open', title: 'Ouvertes', prs: state.prs.filter(pr => sectionOf(pr) === 'open') },
+      { id: 'draft', title: 'Drafts', prs: state.prs.filter(pr => sectionOf(pr) === 'draft') },
     ]
 
     const prRow = (pr: Pr) => (
