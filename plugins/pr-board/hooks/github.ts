@@ -82,7 +82,14 @@ type Data = {
 
 export type Run = (argv: readonly string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>
 
-const who = (author: Author) => author?.login ?? 'ghost'
+/**
+ * Everything GitHub sends is drawn as text, and a terminal acts on escape
+ * sequences (clipboard writes, links, cursor moves): keep newline and tab,
+ * drop every other C0 and C1 control, ESC included.
+ */
+export const clean = (text: string) => text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, '')
+
+const who = (author: Author) => clean(author?.login ?? 'ghost')
 
 const inlineOf = (threads: Threads): PrActivity[] =>
   threads.nodes.flatMap(thread =>
@@ -90,8 +97,8 @@ const inlineOf = (threads: Threads): PrActivity[] =>
       id: comment.id,
       kind: 'inline' as const,
       author: who(comment.author),
-      text: comment.body,
-      path: comment.path,
+      text: clean(comment.body),
+      path: comment.path === undefined ? undefined : clean(comment.path),
       line: comment.line ?? comment.originalLine ?? undefined,
       at: comment.createdAt ?? '',
     })),
@@ -102,10 +109,10 @@ const activityOf = (raw: Raw): PrActivity[] => {
   for (const review of raw.reviews.nodes) {
     // A review that only wraps inline comments says nothing itself.
     if (!review.submittedAt || (review.state === 'COMMENTED' && review.body === '')) continue
-    items.push({ id: review.id, kind: 'review', author: who(review.author), state: review.state, text: review.body, at: review.submittedAt })
+    items.push({ id: review.id, kind: 'review', author: who(review.author), state: review.state === undefined ? undefined : clean(review.state), text: clean(review.body), at: review.submittedAt })
   }
   for (const comment of raw.comments.nodes) {
-    items.push({ id: comment.id, kind: 'comment', author: who(comment.author), text: comment.body, at: comment.createdAt ?? '' })
+    items.push({ id: comment.id, kind: 'comment', author: who(comment.author), text: clean(comment.body), at: comment.createdAt ?? '' })
   }
   return items
 }
@@ -116,7 +123,7 @@ const newestFirst = (items: PrActivity[]) => items.sort((a, b) => Date.parse(b.a
 const ask = async (run: Run, argv: readonly string[]) => {
   const result = await run(argv)
   if (result.exitCode !== 0) {
-    throw new Error(`gh a échoué : ${result.stderr.trim().split('\n')[0] || `code ${result.exitCode}`}`)
+    throw new Error(`gh a échoué : ${clean(result.stderr.trim().split('\n')[0] ?? '') || `code ${result.exitCode}`}`)
   }
   let data: Data
   try {
@@ -124,7 +131,7 @@ const ask = async (run: Run, argv: readonly string[]) => {
   } catch {
     throw new Error('réponse de gh illisible')
   }
-  if (data.errors?.length) throw new Error(data.errors.map(error => error.message).join('; '))
+  if (data.errors?.length) throw new Error(clean(data.errors.map(error => error.message).join('; ')))
   if (!data.data) throw new Error('réponse de gh sans données')
   return data.data
 }
@@ -138,7 +145,7 @@ export const fetchOpenPrs = async (run: Run): Promise<{ login: string; prs: Pr[]
     const items = [...activityOf(raw), ...inlineOf(raw.reviewThreads)]
     let page = raw.reviewThreads.pageInfo
     for (let pages = 0; page.hasNextPage; pages++) {
-      if (pages >= MAX_THREAD_PAGES || page.endCursor === null) throw new Error(`trop de fils de discussion sur ${raw.repository.nameWithOwner}#${raw.number}`)
+      if (pages >= MAX_THREAD_PAGES || page.endCursor === null) throw new Error(`trop de fils de discussion sur ${clean(raw.repository.nameWithOwner)}#${raw.number}`)
       const more = (await ask(run, threadsArgv(raw.id, page.endCursor))).node?.reviewThreads
       if (!more) throw new Error('réponse de gh sans fils de discussion')
       items.push(...inlineOf(more))
@@ -146,15 +153,15 @@ export const fetchOpenPrs = async (run: Run): Promise<{ login: string; prs: Pr[]
     }
     prs.push({
       id: raw.id,
-      repo: raw.repository.nameWithOwner,
+      repo: clean(raw.repository.nameWithOwner),
       number: raw.number,
-      title: raw.title,
-      url: raw.url,
+      title: clean(raw.title),
+      url: clean(raw.url),
       isDraft: raw.isDraft,
       reviewDecision: raw.reviewDecision,
       updatedAt: raw.updatedAt,
       activity: newestFirst(items),
     })
   }
-  return { login: found.viewer.login, prs }
+  return { login: clean(found.viewer.login), prs }
 }

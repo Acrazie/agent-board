@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Pr, PrLoad } from '../types'
-import { fetchOpenPrs } from './github'
+import { clean, fetchOpenPrs } from './github'
 
 const PANE = 'pr-board'
 const REFRESH_MS = 2 * 60 * 1000
@@ -55,7 +55,7 @@ const refresh = async ($: EngineInterface) => {
       const { login, prs } = await fetchOpenPrs(argv => $.process.run([...argv], { timeoutMs: 30_000 }))
       next = { status: 'ok', isLoading: false, prs, login, fetchedAt: new Date(await $.clock.now()).toISOString() }
     } catch (error) {
-      next = { status: 'error', isLoading: false, prs: [], error: error instanceof Error ? error.message : String(error) }
+      next = { status: 'error', isLoading: false, prs: [], error: clean(error instanceof Error ? error.message : String(error)) }
     }
     if (next.status === 'ok') {
       const { prs, fetchedAt = '' } = next

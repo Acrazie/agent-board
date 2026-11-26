@@ -510,3 +510,49 @@ test('a cursor that is not an opaque GitHub id is refused before any command run
   expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   await ui.unmount()
 })
+
+const CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/
+
+const stringsOf = (node: unknown): string[] =>
+  typeof node === 'string' ? [node] : node !== null && typeof node === 'object' ? Object.values(node).flatMap(stringsOf) : []
+
+test('no control character from GitHub reaches the drawn tree, on any surface', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const OSC52 = '\u001b]52;c;ZXZpbA==\u0007'
+  const evil: Raw = {
+    id: 'PE',
+    number: 5,
+    title: `t\u001b[2Jitle${OSC52}`,
+    repo: 'weeki_map\u009b_api',
+    updatedAt: '2026-11-26T10:00:00Z',
+    reviews: [{ id: 'RE', author: `Yann\u001b]8;;https://evil.example\u0007`, state: 'COMMENTED', body: `line1\r\nline2\ttabbed\u001b[31m red ${OSC52}\u0085end\u0000`, at: '2026-11-26T09:00:00Z' }],
+    threads: [{ id: 'TE', author: 'Yann', body: 'x\u001b[Hy', path: `src/\u001b[1mfile.ts`, line: 7, at: '2026-11-26T09:30:00Z' }],
+  }
+  const gh: { current: Gh } = { current: ok([evil]) }
+  world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    const press = surface === 'terminal' || surface === 'desktop'
+    if (press) await ui.press({ key: 'pr:PE' })
+    const strings = stringsOf(await ui.drawn())
+    expect(strings.filter(text => CONTROLS.test(text))).toEqual([])
+    if (press) {
+      // Newline and tab survive, the rest of the visible text is kept as written.
+      expect(await ui.find({ type: 'Text', text: 'line1\nline2\ttabbed[31m red ]52;c;ZXZpbA==end' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /src\/\[1mfile\.ts:7/ })).toBeDefined()
+      await ui.press({ key: 'pr:PE' })
+    }
+    await ui.unmount()
+  }
+
+  // An error from gh is text from outside as well.
+  gh.current = { exitCode: 1, stdout: '', stderr: `boom\u001b]52;c;QQ==\u0007 \u009d` }
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 'refresh' })
+  expect(await ui.find({ type: 'Text', text: /boom/ })).toBeDefined()
+  expect(stringsOf(await ui.drawn()).filter(text => CONTROLS.test(text))).toEqual([])
+  await ui.unmount()
+})
