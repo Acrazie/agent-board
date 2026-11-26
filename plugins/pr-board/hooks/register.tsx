@@ -154,8 +154,9 @@ let isRefreshing = false
 let isOpening = false
 
 const readFamily = async ($: EngineInterface): Promise<FamilyLoad> => {
-  // The app's tools exist only where the session draws on one of its surfaces; a terminal-only session has no tabs.
-  if (!(await $.session.surfaces().catch(() => [] as const)).some(surface => surface !== 'terminal')) return { status: 'absent', prs: [] }
+  // The ccd_* tools exist only in the desktop app: a session drawn nowhere there (terminal, VS Code, mobile) has no tabs.
+  const surfaces: readonly string[] = await $.session.surfaces().catch(() => [])
+  if (!surfaces.includes('desktop')) return { status: 'absent', prs: [] }
   try {
     return { status: 'ok', prs: await readFamilyPrs((server, tool, args) => $.mcp.call(server, tool, args)) }
   } catch {
@@ -286,9 +287,9 @@ export const register: Register = on => {
       const prs = await shownPrs($, (await read($, load)).prs)
       if (e.element === 'band:refresh') void refresh($)
       else if (e.element === 'band:mode:all' || e.element === 'band:mode:session') {
-        // Cette session presses only while its tab is drawn: not without the app's surfaces or while the app fails.
+        // Cette session presses only while its tab is drawn: once the family was read.
         const id = e.element.slice('band:mode:'.length) as 'all' | 'session'
-        if (id === 'all' || !['absent', 'unavailable'].includes((await read($, family)).status)) void setMode($, id)
+        if (id === 'all' || (await read($, family)).status === 'ok') void setMode($, id)
       } else if (e.element.startsWith('band:repo:')) {
         const rest = e.element.slice('band:repo:'.length)
         const cut = rest.indexOf(':')
@@ -371,8 +372,8 @@ export const register: Register = on => {
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
     const bound = await read($, family)
-    // A session on no surface of the desktop app has none of its tools: no tabs, and the list stays on Toutes.
-    const hasToggle = bound.status !== 'absent'
+    // Tabs only once the first read has said the session is in the desktop app (ok, or unavailable when its tools failed).
+    const hasToggle = bound.status === 'ok' || bound.status === 'unavailable'
     const current = effectiveMode(await read($, mode), bound)
     const isFiltered = current === 'session'
 

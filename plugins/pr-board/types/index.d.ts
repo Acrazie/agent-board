@@ -39,7 +39,7 @@ export type PrLoad = {
 /** What the desktop app says is bound to this session and every session it started. */
 export type FamilyLoad = {
   /**
-   * `idle` until the first read; `absent` when the session draws on no surface of the desktop app (no tabs);
+   * `idle` until the first read; `absent` when the session is not drawn in the desktop app (no `desktop` surface: no tabs);
    * `unavailable` when any app call failed.
    */
   status: 'idle' | 'ok' | 'absent' | 'unavailable'

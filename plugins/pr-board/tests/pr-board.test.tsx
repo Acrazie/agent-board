@@ -1502,7 +1502,7 @@ type Fail = { tool: string; how: 'deny' | 'isError' } | undefined
 const text = (value: unknown) => ({ value: { content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }], isError: false } })
 
 /** Stands for the desktop app's tools as `self` sees them; `fail` breaks one tool. */
-const app = (on: On, self: string, options: { rows?: unknown[]; fail?: { current: Fail }; surfaces?: ('terminal' | 'desktop')[] } = {}) => {
+const app = (on: On, self: string, options: { rows?: unknown[]; fail?: { current: Fail }; surfaces?: ('terminal' | 'desktop' | 'vscode' | 'mobile')[] } = {}) => {
   const calls: McpCall[] = []
   // The session draws on the desktop app unless the test says otherwise.
   on('session.surfaces', () => ({ value: options.surfaces ?? ['desktop'] }))
@@ -1968,3 +1968,44 @@ test('a PR that two pages of the search both return is listed once, and the sear
   expect(await rowOf(ui, 'repo:open:weeki-io/weeki_repo')).toBe('∨ weeki_repo 52')
   await ui.unmount()
 })
+
+test('the tabs stay hidden until the first read says the session is in the desktop app', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const w = world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT, { surfaces: ['terminal'] })
+  // The first /prs, before gh answers: the pane draws with the family not read yet.
+  const answer = w.hold('gh')
+  const opening = $.command.run(PRS)
+  await answer.reached
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Button', key: 'mode:all' })).toBeUndefined()
+    expect(await ui.find({ type: 'Button', key: 'mode:session' })).toBeUndefined()
+    expect((await ui.findAll({ type: 'Box' })).filter(box => box.key?.startsWith('tab:mode:'))).toEqual([])
+    await ui.unmount()
+  }
+  answer.open()
+  await opening
+  await clock.settle()
+})
+
+for (const surfaces of [['vscode'], ['terminal', 'mobile']] as const) {
+  test(`a session drawn on ${surfaces.join(' and ')} only is not in the desktop app: no app call, no tabs`, async ($, on) => {
+    const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+    world(on, { current: ok(FAMILY_LIST) })
+    const calls = app(on, PARENT, { surfaces: [...surfaces] })
+    await $.command.run(PRS)
+    await clock.settle()
+    await clock.advance(120_000)
+    expect(calls).toEqual([])
+
+    for (const surface of surfaces) {
+      const ui = await $.ui.mount({ ...PANE, surface })
+      expect(await ui.find({ type: 'Button', key: 'mode:all' })).toBeUndefined()
+      expect(await ui.find({ type: 'Button', key: 'mode:session' })).toBeUndefined()
+      expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeUndefined()
+      expect(await listedOf(ui)).toEqual(ALL)
+      await ui.unmount()
+    }
+  })
+}
