@@ -1,7 +1,7 @@
 import type { On } from 'claude-code'
 import { expect, mock, test } from 'claude-code/testing'
 
-import { FETCH_ARGV } from '../hooks/github'
+import { FETCH_ARGV, ID_SHAPE, THREADS_ARGV } from '../hooks/github'
 
 const PANE = {
   plugin: 'pr-board',
@@ -101,6 +101,25 @@ const TODAY: Raw[] = [
     comments: [{ id: 'C2', author: ME, body: 'my own note', at: '2026-11-24T08:00:00Z' }],
   },
 ]
+
+// Every command is the search template or the threads template, and the only
+// values in it are ids and cursors that match the strict pattern.
+const expectFixedArgv = (calls: readonly (readonly string[])[]) => {
+  for (const call of calls) {
+    if (call.length === FETCH_ARGV.length) {
+      expect(call).toEqual([...FETCH_ARGV])
+      continue
+    }
+    expect(call.slice(0, THREADS_ARGV.length)).toEqual([...THREADS_ARGV])
+    const rest = call.slice(THREADS_ARGV.length)
+    expect(rest).toHaveLength(4)
+    expect([rest[0], rest[2]]).toEqual(['-f', '-f'])
+    expect(rest[1]).toMatch(/^id=/)
+    expect(rest[3]).toMatch(/^cursor=/)
+    expect(rest[1]?.slice(3)).toMatch(ID_SHAPE)
+    expect(rest[3]?.slice(7)).toMatch(ID_SHAPE)
+  }
+}
 
 type Answer = { exitCode: number; stdout: string; stderr: string } | Error
 type Gh = Answer | ((argv: readonly string[]) => Answer)
@@ -487,10 +506,9 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   // One search, then one call per page, each following the cursor GitHub gave.
   expect(w.calls).toHaveLength(3)
   expect(w.calls[0]).toEqual([...FETCH_ARGV])
-  for (const [call, cursor] of [[w.calls[1], 'CUR1'], [w.calls[2], 'CUR2']] as const) {
-    expect(call?.slice(0, 5)).toEqual(['gh', 'api', 'graphql', '-f', expect.stringMatching(/^query=query\(\$id: ID!, \$cursor: String!\)/)])
-    expect(call?.slice(5)).toEqual(['-f', 'id=PT', '-f', `cursor=${cursor}`])
-  }
+  expectFixedArgv(w.calls)
+  expect(w.calls[1]?.slice(5)).toEqual(['-f', 'id=PT', '-f', 'cursor=CUR1'])
+  expect(w.calls[2]?.slice(5)).toEqual(['-f', 'id=PT', '-f', 'cursor=CUR2'])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect((await ui.find({ type: 'Button', key: 'pr:PT' }))?.text).toMatch(/nouveau/)
@@ -500,18 +518,24 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   await ui.unmount()
 })
 
-test('a cursor that is not an opaque GitHub id is refused before any command runs', async ($, on) => {
+test('a PR id or cursor that is not an opaque GitHub id never reaches a command', async ($, on) => {
   const clock = mock.clock(on, { now: Date.parse('2026-11-26T12:00:00Z') })
-  const evil: Raw = { id: 'PT', number: 3, title: 't', repo: 'weeki_map_api', updatedAt: '2026-11-26T11:00:00Z', moreThreads: 'x"; rm -rf ~ #' }
-  const gh = { current: ok([evil]) }
+  const bad = ['x"; rm -rf ~ #', '--hostname=evil.example', '$(whoami)', 'two words', 'line\nbreak', '', 'a'.repeat(201), '`id`']
+  const gh: { current: Gh } = { current: ok([]) }
   const w = world(on, gh)
-  await $.command.run(PRS)
-  await clock.settle()
-
-  expect(w.calls).toHaveLength(1)
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
-  await ui.unmount()
+  for (const [field, value] of bad.flatMap(value => [['cursor', value], ['id', value]] as const)) {
+    w.calls.length = 0
+    const pr: Raw = { id: field === 'id' ? value : 'PT', number: 3, title: 't', repo: 'weeki_map_api', updatedAt: '2026-11-26T11:00:00Z', moreThreads: field === 'cursor' ? value : 'CUR1' }
+    gh.current = ok([pr])
+    await $.command.run(PRS)
+    await clock.settle()
+    // Only the search ran; the bad value stopped the next call, and the pane says so.
+    expect(w.calls).toHaveLength(1)
+    expectFixedArgv(w.calls)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
+    await ui.unmount()
+  }
 })
 
 const CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/

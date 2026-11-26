@@ -37,12 +37,14 @@ export const FETCH_ARGV = [
   'q=is:pr is:open author:@me org:weeki-io',
 ] as const
 
-const ID_SHAPE = /^[A-Za-z0-9+/=_-]{1,200}$/
+export const THREADS_ARGV = ['gh', 'api', 'graphql', '-f', `query=${THREADS_QUERY}`] as const
+
+export const ID_SHAPE = /^[A-Za-z0-9+/=_-]{1,200}$/
 const MAX_THREAD_PAGES = 20
 
 export const threadsArgv = (id: string, cursor: string) => {
   if (!ID_SHAPE.test(id) || !ID_SHAPE.test(cursor)) throw new Error('identifiant GitHub inattendu')
-  return ['gh', 'api', 'graphql', '-f', `query=${THREADS_QUERY}`, '-f', `id=${id}`, '-f', `cursor=${cursor}`]
+  return [...THREADS_ARGV, '-f', `id=${id}`, '-f', `cursor=${cursor}`]
 }
 
 export const ACTIVITY_LIMIT = 20
