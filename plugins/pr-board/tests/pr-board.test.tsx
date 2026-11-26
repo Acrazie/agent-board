@@ -229,6 +229,30 @@ const drawnByKey = (node: unknown, key: string): { hover?: unknown } | undefined
   }
   return undefined
 }
+/**
+ * A control line's visible row and, for a desktop band, its cover: a band's
+ * outer Box holds the padded row then the cover; any other line is the row itself.
+ */
+const partsOf = (line: Drawn) => {
+  const [first, cover] = (line.children ?? []) as Drawn[]
+  return first?.type === 'Box' && cover?.props?.position === 'absolute'
+    ? { row: first, parts: (first.children ?? []) as Drawn[], cover }
+    : { row: line, parts: (line.children ?? []) as Drawn[], cover: undefined }
+}
+/** The four-edge pin and full-size Client a band's cover must have. */
+const expectCover = (cover: Drawn | undefined, key: string) => {
+  expect(cover?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 })
+  expect(cover?.props?.width).toBeUndefined()
+  expect(cover?.props?.height).toBeUndefined()
+  expect(cover?.children?.map(child => (child as Drawn).type)).toEqual(['Client'])
+  expect((cover?.children?.[0] as Drawn).props).toMatchObject({ key, module: 'hooks/band.tsx', width: '100%', height: '100%' })
+}
+/** A band's outer Box draws the shape with no padding; its inner row carries the padding. */
+const expectBandShape = (line: Drawn, row: Drawn) => {
+  expect(line.props).toMatchObject({ position: 'relative', width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
+  for (const side of ['padding', 'paddingX', 'paddingY', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight']) expect(line.props?.[side]).toBeUndefined()
+  expect(row.props).toMatchObject({ flexDirection: 'row', alignItems: 'center', width: '100%', paddingX: 'sm', paddingY: 'xs' })
+}
 /** The open Détails expansion, if any. */
 const openDetails = async (ui: Ui) => (await ui.findAll({ type: 'Box' })).find(box => box.key?.startsWith('details:'))
 /** Expands every collapsed repository row, so each PR's Détails button is drawn. */
@@ -425,7 +449,7 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     // Each control line: the Svg chevron first, then what carries the label (a Button, or on desktop the repository name's Text).
     const lines = elements.filter(element => element.type === 'Box' && element.key?.startsWith('line:'))
     const pairs = lines.map(box => {
-      const [svg, label] = box.children as Drawn[]
+      const [svg, label] = partsOf(box).parts
       const labelText = label?.type === 'Button' ? String(label.props?.label ?? '') : lineText(label).join('')
       return { key: box.key!.slice('line:'.length), alt: svg?.props?.alt, source: svg?.props?.source, svgType: svg?.type, labelType: label?.type, label: labelText }
     })
@@ -447,20 +471,19 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     }
     for (const line of lines) {
       expect(line.props.width).toBe('100%')
-      expect(line.props.alignItems).toBe('center')
+      expect(partsOf(line).row.props?.alignItems).toBe('center')
     }
     const details = lines.find(line => line.key === 'line:pr:P67')!
     if (surface === 'desktop') {
       // Détails is a band too: chevron, the dim text, and the Client cover; no Button, and the hover of a band.
       expect(await ui.find({ type: 'Button', key: 'pr:P67' })).toBeUndefined()
-      const parts = details.children as Drawn[]
-      expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box'])
+      const { row, parts, cover } = partsOf(details)
+      expect(parts.map(child => child.type)).toEqual(['Svg', 'Text'])
       expect(parts[1]?.props?.dimColor).toBe(true)
       expect(lineText(parts[1]).join('')).toBe('Détails')
-      expect(details.props).toMatchObject({ position: 'relative', width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
+      expectBandShape(details, row)
       expect(drawnByKey(await ui.drawn(), details.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
-      expect(parts[2]?.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
-      expect((parts[2]?.children?.[0] as Drawn).props).toMatchObject({ key: 'band:pr:P67', module: 'hooks/band.tsx', width: '100%', height: '100%' })
+      expectCover(cover, 'band:pr:P67')
     } else {
       // Elsewhere Détails keeps its Button in a growing wrapper.
       expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
@@ -470,24 +493,21 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     const bands = lines.filter(line => line.key?.startsWith('line:repo:'))
     expect(bands).toHaveLength(4)
     for (const band of bands) {
-      expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', alignItems: 'center', flexDirection: 'row' })
       // Rounded like the native cards, with an outline the colour of the band so only the rounding shows.
-      expect(band.props).toMatchObject({ borderStyle: 'round', borderColor: '#8E8E9326' })
-      expect(band.props.paddingX).toBeDefined()
-      const parts = band.children as Drawn[]
+      expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', borderStyle: 'round', borderColor: '#8E8E9326' })
+      const { row, parts, cover } = partsOf(band)
       if (surface === 'desktop') {
-        // No name Button: the name is a Text, and an empty Client laid over the whole band takes the press.
-        expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Box'])
+        // No name Button: the name is a Text, and an empty Client pinned over the whole band, padding included, takes the press.
+        expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text'])
         expect(await ui.find({ type: 'Button', key: band.key!.slice('line:'.length) })).toBeUndefined()
-        expect(band.props.position).toBe('relative')
+        expectBandShape(band, row)
         // The whole band lightens under the pointer (a hover is drawn beside the props, so it is read from the drawing).
         expect(drawnByKey(await ui.drawn(), band.key!)?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
         expect(parts[2]?.props?.flexGrow).toBe(1)
-        const cover = parts[4]!
-        expect(cover.props).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' })
-        expect(cover.children?.map(child => (child as Drawn).type)).toEqual(['Client'])
-        expect((cover.children?.[0] as Drawn).props).toMatchObject({ module: 'hooks/band.tsx', width: '100%', height: '100%' })
+        expectCover(cover, `band:${band.key!.slice('line:'.length)}`)
       } else {
+        expect(band.props).toMatchObject({ alignItems: 'center', flexDirection: 'row' })
+        expect(band.props.paddingX).toBeDefined()
         expect(parts.map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
         expect(parts[1]?.props?.plain).toBe(true)
         expect(parts[2]?.props?.flexGrow).toBe(1)
@@ -534,8 +554,12 @@ test('desktop: a press anywhere on a repository band toggles the row through the
   // The region draws no text: the count and the badge are the band's own Texts, after it.
   expect(await ui.findAll({ type: 'Text', in: band })).toEqual([])
   expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
-  const parts = (await ui.findAll({ type: 'Box' })).find(box => box.key === `line:${row}`)?.children as Drawn[]
-  expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Text', 'Box'])
+  const line = (await ui.findAll({ type: 'Box' })).find(box => box.key === `line:${row}`)!
+  const { parts, cover } = partsOf(line as Drawn)
+  expect(parts.map(child => child.type)).toEqual(['Svg', 'Text', 'Box', 'Text', 'Text'])
+  expectCover(cover, band)
+  // The module draws one empty Box filling its region, so the region keeps the cover's size.
+  expect((await ui.findAll({ type: 'Box', in: band })).map(box => box.props)).toEqual([{ width: '100%', height: '100%' }])
   expect(await ui.find({ type: 'Button', key: row })).toBeUndefined()
 
   // A left press far right in the region expands the row; a right press does nothing.

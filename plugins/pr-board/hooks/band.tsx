@@ -11,7 +11,8 @@ const Band: ClientModule = (_props, surface) => {
   surface.onKey(event => {
     if (event.key === 'return' || event.key === ' ') surface.post({ toggle: true })
   })
-  return surface.elements.Box({ width: '100%' })
+  // Fills the whole region, so the region never shrinks to an empty drawing's size.
+  return surface.elements.Box({ width: '100%', height: '100%' })
 }
 
 export default Band
