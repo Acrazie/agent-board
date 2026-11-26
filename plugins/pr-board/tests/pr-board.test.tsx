@@ -299,6 +299,9 @@ test('a PR shows its full title in a Text, never in a Button and without the rep
     }
     expect((await metaOf(ui, 53))?.text).toBe('#53 · mise à jour il y a 2 h')
     expect((await metaOf(ui, 18))?.text).toBe('#18 · mise à jour il y a 1 j')
+    // Sections, repositories and PRs are spaced by at least one row on every surface, terminal included.
+    const gaps = (await ui.findAll({ type: 'Box' })).map(b => b.props.gap).filter(gap => gap !== undefined)
+    expect(gaps.filter(gap => gap !== 1 && gap !== 'md' && gap !== 'lg' && gap !== 'xl')).toEqual([])
     await ui.unmount()
   }
 })

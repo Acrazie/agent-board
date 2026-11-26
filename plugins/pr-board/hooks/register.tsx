@@ -299,7 +299,7 @@ export const register: Register = on => {
         {sections
           .filter(section => section.prs.length > 0)
           .map(section => (
-            <Box key={`section:${section.id}`} flexDirection="column" gap="sm">
+            <Box key={`section:${section.id}`} flexDirection="column" gap="md">
               <Text bold color={section.color}>
                 {section.title} ({section.prs.length})
               </Text>
