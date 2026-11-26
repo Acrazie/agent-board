@@ -3,12 +3,14 @@ import type { Pr, PrActivity } from '../types'
 // The only commands the mod runs: read-only, fixed argv. The one value that
 // is not a constant is a PR id or a pageInfo cursor GitHub itself returned,
 // checked against ID_SHAPE and passed as the value of its own `-f` flag.
+// The search is read page by page too, so no open PR is left out.
 const COMMENT_FIELDS = 'id author { login } body path line originalLine createdAt'
 const THREADS = `pageInfo { hasNextPage endCursor } nodes { comments(last: 20) { nodes { ${COMMENT_FIELDS} } } }`
 
-const QUERY = `query($q: String!) {
+const QUERY = `query($q: String!, $cursor: String) {
   viewer { login }
-  search(query: $q, type: ISSUE, first: 50) {
+  search(query: $q, type: ISSUE, first: 50, after: $cursor) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         id number title url isDraft reviewDecision updatedAt
@@ -34,13 +36,21 @@ export const FETCH_ARGV = [
   '-f',
   `query=${QUERY}`,
   '-f',
-  'q=is:pr is:open author:@me org:weeki-io',
+  // Oldest first: a PR opened while the pages are read lands on the last page, so the pages before it do not shift.
+  'q=is:pr is:open author:@me org:weeki-io sort:created-asc',
 ] as const
 
 export const THREADS_ARGV = ['gh', 'api', 'graphql', '-f', `query=${THREADS_QUERY}`] as const
 
 export const ID_SHAPE = /^[A-Za-z0-9+/=_-]{1,200}$/
 const MAX_THREAD_PAGES = 20
+const MAX_SEARCH_PAGES = 20
+
+/** The search's next page: the fixed search command, with GitHub's own cursor as its one value. */
+export const searchArgv = (cursor: string) => {
+  if (!ID_SHAPE.test(cursor)) throw new Error('identifiant GitHub inattendu')
+  return [...FETCH_ARGV, '-f', `cursor=${cursor}`]
+}
 
 export const threadsArgv = (id: string, cursor: string) => {
   if (!ID_SHAPE.test(id) || !ID_SHAPE.test(cursor)) throw new Error('identifiant GitHub inattendu')
@@ -80,7 +90,11 @@ type Raw = {
   reviewThreads: Threads
 }
 type Data = {
-  data?: { viewer: { login: string }; search: { nodes: Raw[] }; node?: { reviewThreads: Threads } | null }
+  data?: {
+    viewer: { login: string }
+    search: { pageInfo?: { hasNextPage: boolean; endCursor: string | null }; nodes: Raw[] }
+    node?: { reviewThreads: Threads } | null
+  }
   errors?: { message: string }[]
 }
 
@@ -153,8 +167,19 @@ const ask = async (run: Run, argv: readonly string[]) => {
 /** The viewer's open weeki-io PRs, each with its 20 newest reviews and comments across every thread. */
 export const fetchOpenPrs = async (run: Run): Promise<{ login: string; prs: Pr[] }> => {
   const found = await ask(run, FETCH_ARGV)
+  const raws = [...found.search.nodes]
+  // Every page of the search, or an error: a page that fails or does not say what follows never yields a short list.
+  let page = found.search.pageInfo
+  for (let pages = 1; page?.hasNextPage; pages++) {
+    if (pages >= MAX_SEARCH_PAGES || page.endCursor === null) throw new Error('trop de PR ouvertes à lire')
+    const next = (await ask(run, searchArgv(page.endCursor))).search
+    // A PR is read once even when two pages both return it.
+    raws.push(...next.nodes.filter(node => node.id === undefined || !raws.some(raw => raw.id === node.id)))
+    page = next.pageInfo
+  }
+  if (page === undefined) throw new Error('réponse de gh sans pagination')
   const prs: Pr[] = []
-  for (const raw of found.search.nodes) {
+  for (const raw of raws) {
     if (raw.id === undefined) continue
     const items = [...activityOf(raw), ...inlineOf(raw.reviewThreads)]
     let page = raw.reviewThreads.pageInfo

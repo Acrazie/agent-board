@@ -36,6 +36,17 @@ export type PrLoad = {
   error?: string
 }
 
+/** What the desktop app says is bound to this session and every session it started. */
+export type FamilyLoad = {
+  /**
+   * `idle` until the first read; `absent` when the session is not drawn in the desktop app (no `desktop` surface: no tabs);
+   * `unavailable` when any app call failed.
+   */
+  status: 'idle' | 'ok' | 'absent' | 'unavailable'
+  /** The bound PRs as `owner/name#number`, lower case. */
+  prs: string[]
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'pr-board': {
@@ -46,6 +57,14 @@ declare module 'claude-code' {
       expanded: string | null
       /** `section:repo` to whether that repository row is expanded, when the person toggled it since the pane opened. Never stored. */
       repoRows: Record<string, boolean>
+      /** Sections collapsed since the pane opened. Never stored. */
+      closedSections: string[]
+      /** `<load> <Client key>` of the band Clients that failed (`ui.fault`, `hooks/faults.ts`); those bands fall back to their Button for that load, until `/prs`. Never stored. */
+      faultedBands: string[]
+      /** `all` (Toutes) or `session` (Cette session); chosen again each time `/prs` opens the pane. Never stored. */
+      mode: 'all' | 'session'
+      /** The PRs bound to this session's family, re-read on every refresh. Never stored. */
+      family: FamilyLoad
     }
   }
 }
