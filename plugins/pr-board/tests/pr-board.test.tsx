@@ -188,21 +188,21 @@ const metaOf = (ui: Ui, number: number) => ui.find({ type: 'Text', text: new Reg
 const isBadged = async (ui: Ui, number: number) => /nouveau/.test((await metaOf(ui, number))?.text ?? '')
 const repoKey = (section: 'fix' | 'open' | 'draft', repo: string) => `repo:${section}:weeki-io/${repo}`
 const keysOf = async (ui: Ui, prefix: string) => (await ui.findAll({ type: 'Button' })).map(b => b.key ?? '').filter(key => key.startsWith(prefix))
-/**
- * Each keyed Button with its chevron read as a glyph: from the Svg drawn just
- * before it (desktop, vscode, mobile), or from its own label (terminal).
- */
-const chevronRows = async (ui: Ui) => {
-  const rows: { key: string; text: string }[] = []
-  let alt: unknown
-  for (const element of await ui.findAll({})) {
-    if (element.type === 'Svg') alt = element.props.alt
-    if (element.type !== 'Button' || element.key === undefined) continue
-    rows.push({ key: element.key, text: alt === undefined ? element.text : `${alt === 'déplié' ? '∨' : '›'} ${element.text}` })
-    alt = undefined
-  }
-  return rows
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+/** A control line read as one string: the chevron as a glyph (from the Svg, or already in the terminal label), the label, then the Texts drawn apart. */
+const lineText = (node: unknown): string[] => {
+  if (typeof node === 'string') return [node]
+  const { type, props, children = [] } = node as Drawn
+  if (type === 'Svg') return [props?.alt === 'déplié' ? '∨' : '›']
+  if (type === 'Button') return [String(props?.label ?? '')]
+  if (type === 'Text') return [children.flatMap(lineText).join('')]
+  return children.flatMap(lineText)
 }
+/** Each control line, keyed by its Button's key, read as `∨ weeki_map_api 2 nouveau`. */
+const chevronRows = async (ui: Ui) =>
+  (await ui.findAll({ type: 'Box' }))
+    .filter(box => box.key?.startsWith('line:'))
+    .map(box => ({ key: box.key!.slice(5), text: box.children.flatMap(lineText).filter(part => part !== '').join(' ') }))
 const rowOf = async (ui: Ui, key: string) => (await chevronRows(ui)).find(row => row.key === key)?.text
 /** The section headers, as drawn: `∨ Ouvertes 2`. */
 const headsOf = async (ui: Ui) => (await chevronRows(ui)).filter(row => row.key.startsWith('head:')).map(row => row.text)
@@ -273,14 +273,14 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const rows = async () => (await chevronRows(ui)).filter(row => row.key.startsWith('repo:')).map(row => row.text)
   // A repository with PRs in two sections appears in each, with only that section's PRs; repositories follow their newest PR.
-  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '∨ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api 1', '∨ weeki_user_api 1', '› weeki_atlas_api 1', '› weeki_map_api 2', '› weeki_map_api 1'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E'])
 
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:E', 'pr:A', 'pr:B'])
   await ui.press({ key: repoKey('fix', 'weeki_user_api') })
   await ui.press({ key: repoKey('draft', 'weeki_map_api') })
-  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '› weeki_user_api (1)', '› weeki_atlas_api (1)', '∨ weeki_map_api (2)', '∨ weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api 1', '› weeki_user_api 1', '› weeki_atlas_api 1', '∨ weeki_map_api 2', '∨ weeki_map_api 1'])
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:A', 'pr:B', 'pr:C'])
   await ui.press({ key: repoKey('open', 'weeki_map_api') })
   expect(await keysOf(ui, 'pr:')).toEqual(['pr:F', 'pr:C'])
@@ -292,7 +292,7 @@ test('repositories: grouped per section with counts, newest first, À corriger e
   // Reopening the pane starts from the defaults again.
   await $.command.run(PRS)
   await clock.settle()
-  expect(await rows()).toEqual(['∨ weeki_tiles_api (1)', '∨ weeki_user_api (1)', '› weeki_atlas_api (1)', '› weeki_map_api (2)', '› weeki_map_api (1)'])
+  expect(await rows()).toEqual(['∨ weeki_tiles_api 1', '∨ weeki_user_api 1', '› weeki_atlas_api 1', '› weeki_map_api 2', '› weeki_map_api 1'])
   await ui.unmount()
 })
 
@@ -420,7 +420,22 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
     const rows = elements.filter(element => element.type === 'Box' && element.props.alignItems === 'center')
     expect(rows).toHaveLength(pairs.length)
     for (const row of rows) expect(row.props.width).toBe('100%')
-    expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(pairs.length)
+    // Détails keeps its growing wrapper.
+    expect(elements.filter(element => element.type === 'Box' && element.props.flexGrow === 1 && element.props.alignItems === 'stretch')).toHaveLength(1)
+    // Counts and badges are drawn apart: no label carries one.
+    for (const pair of pairs) expect(pair.label).not.toMatch(/\d|nouveau/)
+    // Each repository row is a full-width grey band: chevron, a light Button with the name, a spacer, then the count.
+    const bands = elements.filter(element => element.type === 'Box' && element.key?.startsWith('line:repo:'))
+    expect(bands).toHaveLength(4)
+    for (const band of bands) {
+      expect(band.props).toMatchObject({ width: '100%', backgroundColor: '#8E8E9326', alignItems: 'center', flexDirection: 'row' })
+      expect(band.props.paddingX).toBeDefined()
+      expect((band.children as Drawn[]).map(child => child.type)).toEqual(['Svg', 'Button', 'Box', 'Text'])
+      expect((band.children as Drawn[])[1]?.props?.plain).toBe(true)
+      expect((band.children as Drawn[])[2]?.props?.flexGrow).toBe(1)
+    }
+    expect(await rowOf(ui, 'repo:open:weeki-io/weeki_atlas_api')).toBe('› weeki_atlas_api 1')
+    expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
     if (surface === 'desktop') {
       // Opening Détails turns its chevron down; the label stays the same.
       await ui.press({ key: 'pr:P67' })
@@ -432,8 +447,13 @@ test('chevrons: an Svg left of each Button where the surface draws Svg, a text g
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.findAll({ type: 'Svg' })).toEqual([])
-  expect((await ui.find({ type: 'Button', key: 'head:open' }))?.text).toBe('∨ Ouvertes 2')
-  expect((await ui.find({ type: 'Button', key: 'repo:open:weeki-io/weeki_atlas_api' }))?.text).toBe('› weeki_atlas_api (1)')
+  // The glyph stays in the label, the count is a Text beside it, and no band is painted.
+  expect((await ui.find({ type: 'Button', key: 'head:open' }))?.text).toBe('∨ Ouvertes')
+  expect((await ui.find({ type: 'Button', key: 'repo:open:weeki-io/weeki_atlas_api' }))?.text).toBe('› weeki_atlas_api')
+  expect(await rowOf(ui, 'repo:open:weeki-io/weeki_atlas_api')).toBe('› weeki_atlas_api 1')
+  expect(await rowOf(ui, 'head:open')).toBe('∨ Ouvertes 2')
+  const band = (await ui.findAll({ type: 'Box' })).find(box => box.key === 'line:repo:open:weeki-io/weeki_atlas_api')
+  expect(band?.props.backgroundColor).toBeUndefined()
   // Détails was opened on desktop just before.
   expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toBe('∨ Détails')
   await ui.unmount()
@@ -463,9 +483,9 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const row = repoKey('open', 'weeki_atlas_api')
   const rowText = () => rowOf(ui, row)
-  expect(await rowText()).toBe('› weeki_atlas_api (1) nouveau')
+  expect(await rowText()).toBe('› weeki_atlas_api 1 nouveau')
   // A collapsed repository without news shows none.
-  expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_atlas_frontend') }))?.text).not.toMatch(/nouveau/)
+  expect((await rowOf(ui, repoKey('open', 'weeki_atlas_frontend')))).not.toMatch(/nouveau/)
 
   await ui.press({ key: row })
   expect(await isBadged(ui, 7)).toBe(true)
@@ -478,7 +498,7 @@ test('badge on a collapsed repository: expanding the repository keeps it, only D
   expect(await isBadged(ui, 7)).toBe(false)
   await ui.press({ key: 'pr:P7' })
   await ui.press({ key: row })
-  expect(await rowText()).toBe('› weeki_atlas_api (1)')
+  expect(await rowText()).toBe('› weeki_atlas_api 1')
   expect(Object.keys(w.store.get('seen') as object)).toEqual(['P7'])
   await ui.unmount()
 })
@@ -510,7 +530,7 @@ test('reopening the pane closes an expanded PR its collapsed repository hides: n
   await clock.settle()
   await clock.advance(120_000)
 
-  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api (1) nouveau')
+  expect(await rowOf(ui, row)).toBe('› weeki_atlas_api 1 nouveau')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
   await ui.press({ key: row })
   expect(await isBadged(ui, 7)).toBe(true)
@@ -542,7 +562,7 @@ for (const [move, before, after] of [
 
     const rows = (await chevronRows(ui)).filter(row => row.key.startsWith('repo:'))
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.text).toBe('› weeki_atlas (1) nouveau')
+    expect(rows[0]?.text).toBe('› weeki_atlas 1 nouveau')
     expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
     await ui.press({ key: rows[0]!.key! })
     expect(await isBadged(ui, 67)).toBe(true)
@@ -563,7 +583,7 @@ test('collapsing a repository closes the PR expanded in it, so a refresh never c
   await ui.press({ key: repoKey('fix', 'weeki_atlas') })
   gh.current = ok(withReview())
   await ui.press({ key: 'refresh' })
-  expect((await ui.find({ type: 'Button', key: repoKey('fix', 'weeki_atlas') }))?.text).toMatch(/nouveau/)
+  expect((await rowOf(ui, repoKey('fix', 'weeki_atlas')))).toMatch(/nouveau/)
   await ui.press({ key: repoKey('fix', 'weeki_atlas') })
   expect(await ui.find({ type: 'Link' })).toBeUndefined()
   expect(await isBadged(ui, 67)).toBe(true)
@@ -999,7 +1019,7 @@ test('replies on older threads are found by following GitHub pageInfo, with fixe
   expect(w.calls[2]?.slice(5)).toEqual(['-f', 'id=PT', '-f', 'cursor=CUR2'])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.find({ type: 'Button', key: repoKey('open', 'weeki_map_api') }))?.text).toMatch(/nouveau/)
+  expect((await rowOf(ui, repoKey('open', 'weeki_map_api')))).toMatch(/nouveau/)
   await expandAll(ui)
   expect(await isBadged(ui, 3)).toBe(true)
   await ui.press({ key: 'pr:PT' })

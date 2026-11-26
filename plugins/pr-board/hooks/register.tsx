@@ -35,6 +35,8 @@ const chevronSvg = (path: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${path}" fill="none" stroke="#8E8E93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
 const CHEVRON_RIGHT = chevronSvg('M6 4l4 4-4 4')
 const CHEVRON_DOWN = chevronSvg('M4 6l4 4 4-4')
+// A translucent mid-grey, close to the desktop's own cards on light and dark.
+const BAND = '#8E8E9326'
 
 /** À corriger's repositories start expanded, every other one collapsed. */
 const isRepoOpen = (rows: Record<string, boolean>, section: SectionId, repo: string) => rows[`${section}:${repo}`] ?? section === 'fix'
@@ -209,17 +211,16 @@ export const register: Register = on => {
     // `resolve` completes every table with every name (a missing one draws a fragment), so the surface decides.
     const Svg = e.surface !== 'terminal' && 'Svg' in elements ? elements.Svg : undefined
     const glyph = (isOpen: boolean) => (Svg ? '' : isOpen ? '∨ ' : '› ')
-    const withChevron = (isOpen: boolean, button: ReturnType<typeof Button>) =>
-      Svg ? (
-        <Box flexDirection="row" alignItems="center" columnGap="xs" width="100%">
-          <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} />
-          <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
-            {button}
-          </Box>
-        </Box>
-      ) : (
-        button
-      )
+    const chevron = (isOpen: boolean) =>
+      Svg ? <Svg source={isOpen ? CHEVRON_DOWN : CHEVRON_RIGHT} alt={isOpen ? 'déplié' : 'replié'} width={14} height={14} /> : null
+    // One control line, keyed `line:<button key>`: the chevron, the Button, then what is drawn apart from its label.
+    const line = (key: string, isOpen: boolean, control: ReturnType<typeof Box>, ...after: ReturnType<typeof Text>[]) => (
+      <Box key={`line:${key}`} flexDirection="row" alignItems="center" columnGap="xs" width="100%">
+        {chevron(isOpen)}
+        {control}
+        {after}
+      </Box>
+    )
     const state = await read($, load)
     const seenAt = await read($, seen)
     const openId = await read($, expanded)
@@ -284,11 +285,14 @@ export const register: Register = on => {
           {badged(pr) ? ' · ' : ''}
           {badged(pr) ? <Text color="yellow">nouveau</Text> : null}
         </Text>
-        {withChevron(
+        {line(
+          `pr:${pr.id}`,
           openId === pr.id,
-          <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
-            {`${glyph(openId === pr.id)}Détails`}
-          </Button>,
+          <Box flexDirection="column" alignItems="stretch" flexGrow={1}>
+            <Button key={`pr:${pr.id}`} dimColor onPress={() => void toggle($, pr)}>
+              {`${glyph(openId === pr.id)}Détails`}
+            </Button>
+          </Box>,
         )}
         {openId === pr.id && (
           <Box flexDirection="column" paddingLeft={2}>
@@ -313,13 +317,23 @@ export const register: Register = on => {
       const isOpen = isRepoOpen(rows, section, repo)
       return (
         <Box key={`group:${section}:${repo}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-          {withChevron(
-            isOpen,
-            <Button key={`repo:${section}:${repo}`} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
-              {`${glyph(isOpen)}${shortRepo(repo)} (${prs.length})`}
-              {!isOpen && prs.some(badged) ? <Text color="yellow"> nouveau</Text> : null}
-            </Button>,
-          )}
+          {/* Off the terminal, a full-width grey band; only its Button is pressed, the native desktop Button keeping its own width. */}
+          <Box
+            key={`line:repo:${section}:${repo}`}
+            flexDirection="row"
+            alignItems="center"
+            columnGap="xs"
+            width="100%"
+            {...(Svg ? { backgroundColor: BAND, paddingX: 'sm', paddingY: 'xs' } : {})}
+          >
+            {chevron(isOpen)}
+            <Button key={`repo:${section}:${repo}`} {...(Svg ? { plain: true } : {})} onPress={() => void toggleRepo($, section, repo, prs.map(pr => pr.id))}>
+              {`${glyph(isOpen)}${shortRepo(repo)}`}
+            </Button>
+            {Svg ? <Box flexGrow={1} /> : null}
+            <Text dimColor>{prs.length}</Text>
+            {!isOpen && prs.some(badged) ? <Text color="yellow">nouveau</Text> : null}
+          </Box>
           {isOpen && (
             <Box flexDirection="column" alignItems="stretch" gap="md" paddingLeft={2}>
               {prs.map(prRow)}
@@ -336,11 +350,13 @@ export const register: Register = on => {
           .filter(section => section.prs.length > 0)
           .map(section => (
             <Box key={`section:${section.id}`} flexDirection="column" alignItems="stretch" width="100%" gap="md">
-              {withChevron(
+              {line(
+                `head:${section.id}`,
                 !closed.includes(section.id),
                 <Button key={`head:${section.id}`} plain dimColor onPress={() => void toggleSection($, section.id)}>
-                  {`${glyph(!closed.includes(section.id))}${section.title} ${section.prs.length}`}
+                  {`${glyph(!closed.includes(section.id))}${section.title}`}
                 </Button>,
+                <Text dimColor>{section.prs.length}</Text>,
               )}
               {!closed.includes(section.id) && byRepo(section.prs).map(([repo, prs]) => repoRow(section.id, repo, prs))}
             </Box>
