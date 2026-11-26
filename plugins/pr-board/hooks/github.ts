@@ -36,7 +36,8 @@ export const FETCH_ARGV = [
   '-f',
   `query=${QUERY}`,
   '-f',
-  'q=is:pr is:open author:@me org:weeki-io',
+  // Oldest first: a PR opened while the pages are read lands on the last page, so the pages before it do not shift.
+  'q=is:pr is:open author:@me org:weeki-io sort:created-asc',
 ] as const
 
 export const THREADS_ARGV = ['gh', 'api', 'graphql', '-f', `query=${THREADS_QUERY}`] as const
@@ -172,7 +173,8 @@ export const fetchOpenPrs = async (run: Run): Promise<{ login: string; prs: Pr[]
   for (let pages = 1; page?.hasNextPage; pages++) {
     if (pages >= MAX_SEARCH_PAGES || page.endCursor === null) throw new Error('trop de PR ouvertes à lire')
     const next = (await ask(run, searchArgv(page.endCursor))).search
-    raws.push(...next.nodes)
+    // A PR is read once even when two pages both return it.
+    raws.push(...next.nodes.filter(node => node.id === undefined || !raws.some(raw => raw.id === node.id)))
     page = next.pageInfo
   }
   if (page === undefined) throw new Error('réponse de gh sans pagination')

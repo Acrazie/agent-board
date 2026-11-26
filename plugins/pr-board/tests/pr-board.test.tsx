@@ -1943,3 +1943,28 @@ test('the header time is local: UTC+1 in winter, UTC+2 in summer, and it follows
   expect(clockTime(Date.parse('2026-11-26T23:30:00Z'), -60)).toBe('00:30')
   expect(clockTime(Date.parse('2026-11-26T03:05:00Z'), 300)).toBe('22:05')
 })
+
+test('a PR that two pages of the search both return is listed once, and the search is sorted oldest first', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T12:00:00Z') })
+  expect(FETCH_ARGV[FETCH_ARGV.length - 1]).toMatch(/ sort:created-asc$/)
+  const many: Raw[] = Array.from({ length: 52 }, (_, i) => ({ id: `PP${i}`, number: 100 + i, title: `pr ${i}`, repo: 'weeki_repo', updatedAt: `2026-11-${String(10 + (i % 15)).padStart(2, '0')}T08:00:00Z` }))
+  // The second page starts with the last PR of the first.
+  const pages: Record<string, Answer> = { CURS1: ok(many.slice(49)) }
+  world(on, {
+    current: argv => {
+      const cursor = argv.find(a => a.startsWith('cursor='))?.slice(7)
+      return cursor === undefined ? { exitCode: 0, stdout: stdoutOf(many.slice(0, 50), 'CURS1'), stderr: '' } : (pages[cursor] ?? new Error('unknown cursor'))
+    },
+  })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await headsOf(ui)).toEqual(['∨ Ouvertes 52'])
+  await expandAll(ui)
+  const keys = await keysOf(ui, 'pr:')
+  expect(keys).toHaveLength(52)
+  expect(new Set(keys).size).toBe(52)
+  expect(await rowOf(ui, 'repo:open:weeki-io/weeki_repo')).toBe('∨ weeki_repo 52')
+  await ui.unmount()
+})

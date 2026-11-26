@@ -36,7 +36,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope loads it in eve
 - **Desktop app, read only.** The mod calls three of the app's tools and nothing else: `ccd_session_mgmt.get_session` (for `self`), `ccd_session_mgmt.list_sessions` (`linked`) and `ccd_pr.get_status` (see [`hooks/sessions.ts`](hooks/sessions.ts)). A session id reaches `get_status` only in the `local_<uuid>` shape. Only open `weeki-io` PRs already in the `gh` list are shown, matched on repository and number.
 - **Review text is display-only.** It is drawn as plain text and never sent to Claude.
 - The only thing stored (`$.store`) is, per PR, when you last opened its details. It is local to this machine; losing it only brings the badges back. Which sections and repositories are expanded, and the Toutes / Cette session choice, are kept in session memory only.
-- Every open PR is listed: the search is read 50 at a time, following GitHub's cursor. If a page fails, the pane shows the error rather than a shorter list.
+- Every open PR is listed: the search is read 50 at a time, oldest PR first, following GitHub's cursor, and a PR two pages both return is listed once. If a page fails, the pane shows the error rather than a shorter list.
 
 ## Develop
 
