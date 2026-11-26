@@ -383,3 +383,61 @@ test('a refresh keeps the list and the open expansion drawn, and says so in the 
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
   await ui.unmount()
 })
+
+test('expanding stamps what the pane shows, not the clock: a review posted before the click but after the fetch stays new', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  // The clock moves past the review's time, and the review only reaches the pane at the next refresh.
+  const withReview = ok([
+    {
+      ...TODAY[0]!,
+      reviews: [...TODAY[0]!.reviews!, { id: 'R2', author: 'YannAndreWeeki', state: 'COMMENTED', body: 'late review', at: '2026-11-26T11:30:00Z' }],
+    },
+    ...TODAY.slice(1),
+  ])
+  await clock.set(Date.parse('2026-11-26T11:01:00Z'))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 'pr:P67' })
+  await ui.press({ key: 'pr:P67' })
+  // Stamped with the newest item shown (10:30, my own comment), not with the click time.
+  expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
+
+  gh.current = withReview
+  await clock.set(Date.parse('2026-11-26T11:40:00Z'))
+  await ui.press({ key: 'refresh' })
+  expect((await ui.find({ type: 'Button', key: 'pr:P67' }))?.text).toMatch(/nouveau/)
+  await ui.unmount()
+})
+
+test('a click during a refresh and the refresh both keep their seen changes', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const gh = { current: ok(TODAY) }
+  const w = world(on, gh)
+  w.store.set('seen', { P67: '2026-11-26T10:59:00Z', GONE: '2026-01-01T00:00:00Z' })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  hold.gate = new Promise<void>(resolve => {
+    hold.release = resolve
+  })
+  const tick = clock.advance(120_000)
+  await clock.settle()
+  // The pane is still drawn: click a PR while gh has not answered.
+  await ui.press({ key: 'pr:P7' })
+  hold.release?.()
+  hold.gate = undefined
+  await tick
+  await clock.settle()
+
+  const stored = w.store.get('seen') as Record<string, string>
+  // The click survived the refresh, and the refresh dropped the PR that left.
+  expect(Object.keys(stored).sort()).toEqual(['P67', 'P7'])
+  // P7 is expanded and has no activity: counted seen as of the refresh that just showed it.
+  expect(stored.P7).toBe('2026-11-26T11:02:00.000Z')
+  await ui.unmount()
+})

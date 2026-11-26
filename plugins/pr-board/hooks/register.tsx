@@ -18,18 +18,30 @@ const shortRepo = (repo: string) => repo.replace(/^weeki-io\//, '')
 const isNew = (pr: Pr, login: string | undefined, seenAt: string | undefined) =>
   pr.activity.some(item => item.author !== login && (seenAt === undefined || Date.parse(item.at) > Date.parse(seenAt)))
 
-const readStoredSeen = async ($: EngineInterface): Promise<Record<string, string>> => {
-  const stored = await $.store.get(SEEN_KEY)
-  return stored !== null && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, string>) : {}
+// The one door to the seen state: the atom is the truth, `$.store` its copy.
+// Changes run one after another, so a refresh and a click never overwrite each
+// other, and the store always ends up holding the last atom value.
+let isSeenLoaded = false
+let seenQueue: Promise<unknown> = Promise.resolve()
+
+const changeSeen = ($: EngineInterface, change: (seen: Record<string, string>) => Record<string, string>) => {
+  const run = async () => {
+    if (!isSeenLoaded) {
+      const stored = await $.store.get(SEEN_KEY)
+      const earlier = stored !== null && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, string>) : {}
+      await update($, seen, current => ({ ...earlier, ...current }))
+      isSeenLoaded = true
+    }
+    const next = await update($, seen, change)
+    await $.store.set(SEEN_KEY, next)
+  }
+  const done = seenQueue.then(run, run)
+  seenQueue = done.catch(() => undefined)
+  return done
 }
 
-const markSeen = async ($: EngineInterface, pr: Pr) => {
-  const now = new Date(await $.clock.now()).toISOString()
-  const newest = pr.activity.reduce((latest, item) => (item.at > latest ? item.at : latest), now)
-  const next = { ...(await readStoredSeen($)), [pr.id]: newest }
-  await $.store.set(SEEN_KEY, next)
-  await update($, seen, () => next)
-}
+/** What the expansion shows of a PR: its newest item, or the moment the data was fetched when it has none. */
+const shownUpTo = (pr: Pr, fetchedAt: string) => pr.activity.reduce((latest, item) => (item.at > latest ? item.at : latest), pr.activity[0]?.at ?? fetchedAt)
 
 let isRefreshing = false
 
@@ -50,16 +62,18 @@ const refresh = async ($: EngineInterface) => {
     } catch (error) {
       next = { status: 'error', isLoading: false, prs: [], error: error instanceof Error ? error.message : String(error) }
     }
-    await update($, load, () => next)
     if (next.status === 'ok') {
-      const ids = new Set(next.prs.map(pr => pr.id))
-      const kept = Object.fromEntries(Object.entries(await readStoredSeen($)).filter(([id]) => ids.has(id)))
-      await $.store.set(SEEN_KEY, kept)
-      await update($, seen, () => kept)
+      const { prs, fetchedAt = '' } = next
       const openId = await read($, expanded)
-      const open = next.prs.find(pr => pr.id === openId)
-      if (open) await markSeen($, open)
+      // One change before the list is published: drop PRs that left, and
+      // count what an expanded PR now shows as seen.
+      await changeSeen($, current => {
+        const kept = Object.fromEntries(Object.entries(current).filter(([id]) => prs.some(pr => pr.id === id)))
+        const open = prs.find(pr => pr.id === openId)
+        return open ? { ...kept, [open.id]: shownUpTo(open, fetchedAt) } : kept
+      })
     }
+    await update($, load, () => next)
   } finally {
     isRefreshing = false
   }
@@ -70,7 +84,10 @@ const toggle = async ($: EngineInterface, pr: Pr) => {
     await update($, expanded, () => null)
     return
   }
-  await markSeen($, pr)
+  // The PR as the pane holds it now, which is what the expansion will show.
+  const { prs, fetchedAt = '' } = await read($, load)
+  const shown = prs.find(one => one.id === pr.id) ?? pr
+  await changeSeen($, current => ({ ...current, [shown.id]: shownUpTo(shown, fetchedAt) }))
   await update($, expanded, () => pr.id)
 }
 
