@@ -10,6 +10,8 @@ const Band: ClientModule = (_props, surface) => {
   })
   surface.onKey(event => {
     if (event.key === 'return' || event.key === ' ') surface.post({ toggle: true })
+    // R refreshes the pane, as the refresh Button's hotkey does on the other surfaces.
+    if (event.key === 'r' && !event.ctrl && !event.meta) surface.post({ refresh: true })
   })
   // No height of its own: the Client's fixed rows size the region.
   return surface.elements.Box({ width: '100%' })

@@ -41,6 +41,8 @@ const chevronSvg = (path: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="${path}" fill="none" stroke="#8E8E93" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`
 const CHEVRON_RIGHT = chevronSvg('M6 4l4 4-4 4')
 const CHEVRON_DOWN = chevronSvg('M4 6l4 4 4-4')
+// A circular arrow in the chevrons' grey: the refresh control.
+const REFRESH_ICON = chevronSvg('M13 8a5 5 0 1 1-1.5-3.5M13 2.5V5h-2.5')
 // A translucent mid-grey, close to the desktop's own cards on light and dark.
 const BAND = '#8E8E9326'
 // The band under the pointer, a little lighter.
@@ -254,9 +256,17 @@ export const register: Register = on => {
   // for a row the pane draws now. The key names the row; the posted data is only checked for its shape.
   on('ui.message', async ($, e, next) => {
     const isToggle = e.data !== null && typeof e.data === 'object' && (e.data as { toggle?: unknown }).toggle === true
-    if (e.requestId === PANE && e.module.endsWith('band.tsx') && isToggle) {
+    const isRefresh = e.data !== null && typeof e.data === 'object' && (e.data as { refresh?: unknown }).refresh === true
+    // R on a focused band refreshes, as the refresh Button's hotkey does where it is drawn.
+    if (e.requestId === PANE && e.module.endsWith('band.tsx') && isRefresh) void refresh($)
+    else if (e.requestId === PANE && e.module.endsWith('band.tsx') && isToggle) {
       const prs = await shownPrs($, (await read($, load)).prs)
-      if (e.element.startsWith('band:repo:')) {
+      if (e.element === 'band:refresh') void refresh($)
+      else if (e.element === 'band:mode:all' || e.element === 'band:mode:session') {
+        // Cette session presses only while the app answered; otherwise its tab is not drawn.
+        const id = e.element.slice('band:mode:'.length) as 'all' | 'session'
+        if (id === 'all' || (await read($, family)).status !== 'unavailable') void setMode($, id)
+      } else if (e.element.startsWith('band:repo:')) {
         const rest = e.element.slice('band:repo:'.length)
         const cut = rest.indexOf(':')
         const section = rest.slice(0, cut)
@@ -343,48 +353,83 @@ export const register: Register = on => {
     const current = hasToggle ? await read($, mode) : 'all'
     const isFiltered = current === 'session' && bound.status === 'ok'
 
-    const header = (
-      <Box flexDirection="row" gap={1}>
-        <Button key="refresh" hotkey="r" onPress={() => void refresh($)}>
-          Actualiser
-        </Button>
-        <Text dimColor>
-          {state.isLoading ? 'actualisation…' : state.fetchedAt ? `à jour ${time(state.fetchedAt)} UTC` : ''}
-        </Text>
+    // One full-width row at the top: the Toutes and Cette session tabs, then the time of the last answer and the refresh icon.
+    const countAll = state.status === 'ok' ? state.prs.length : undefined
+    const countSession = state.status === 'ok' && bound.status === 'ok' ? state.prs.filter(pr => isBound(bound, pr)).length : undefined
+    // A tab on desktop: a rounded band that grows to share the row, pressed through a Client laid over it like the
+    // repository bands; the active one carries the bands' grey fill, the other none and dim text, both lighten under the pointer.
+    const tabBand = (key: string, isActive: boolean, isPressable: boolean, ...shown: (ReturnType<typeof Box> | null)[]) => (
+      <Box
+        key={`tab:${key}`}
+        position="relative"
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="center"
+        columnGap="xs"
+        flexGrow={1}
+        {...(isActive ? { backgroundColor: BAND } : {})}
+        borderStyle="round"
+        borderColor={BAND}
+        paddingX="sm"
+        paddingY="xs"
+        {...(isPressable ? { hover: { backgroundColor: BAND_HOVER, borderColor: BAND_HOVER } } : {})}
+      >
+        {shown}
+        {isPressable && Client ? (
+          <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+            <Client key={`band:${key}`} module="./band.tsx" width="100%" height={BAND_ROWS} />
+          </Box>
+        ) : null}
       </Box>
     )
-    // Toutes or Cette session; while any app call fails, a dim line instead and the list stays on Toutes.
-    const modes = !hasToggle ? null : bound.status === 'unavailable' ? (
-      <Text dimColor>Sessions indisponibles</Text>
-    ) : (
-      <Box flexDirection="row" gap={1}>
-        {(
-          [
-            ['all', 'Toutes'],
-            ['session', 'Cette session'],
-          ] as const
-        ).map(([id, label]) => (
-          <Button
-            key={`mode:${id}`}
-            variant={current === id ? 'primary' : 'secondary'}
-            dimColor={current !== id}
-            onPress={() => void setMode($, id)}
-          >
-            {label}
-          </Button>
-        ))}
+    const tab = (id: 'all' | 'session', label: string, count: number | undefined) => {
+      const isActive = current === id
+      const text = count === undefined ? label : `${label} ${count}`
+      return isBand(`mode:${id}`) ? (
+        tabBand(`mode:${id}`, isActive, true, <Text dimColor={!isActive}>{text}</Text>)
+      ) : (
+        <Button key={`mode:${id}`} variant={isActive ? 'primary' : 'secondary'} dimColor={!isActive} onPress={() => void setMode($, id)}>
+          {text}
+        </Button>
+      )
+    }
+    // While any app call fails, Cette session gives way to a dim tab that does nothing, and the list stays on Toutes.
+    const unavailable = Svg ? tabBand('sessions', false, false, <Text dimColor>Sessions indisponibles</Text>) : <Text dimColor>Sessions indisponibles</Text>
+    const refreshControl = isBand('refresh') ? (
+      <Box
+        key="tab:refresh"
+        position="relative"
+        flexDirection="row"
+        alignItems="center"
+        borderStyle="round"
+        borderColor={BAND}
+        paddingX="sm"
+        paddingY="xs"
+        hover={{ backgroundColor: BAND_HOVER, borderColor: BAND_HOVER }}
+      >
+        {Svg ? <Svg source={REFRESH_ICON} alt="Actualiser" width={14} height={14} /> : null}
+        <Box position="absolute" top={0} left={0} right={0} bottom={0} overflow="hidden">
+          {Client ? <Client key="band:refresh" module="./band.tsx" width="100%" height={BAND_ROWS} /> : null}
+        </Box>
       </Box>
+    ) : (
+      <Button key="refresh" hotkey="r" {...(Svg ? { plain: true } : {})} onPress={() => void refresh($)}>
+        ↻
+      </Button>
     )
     const top = (
-      <Box flexDirection="column" gap={1}>
-        {header}
-        {modes}
+      <Box key="top" flexDirection="row" alignItems="center" columnGap="sm" width="100%">
+        {hasToggle ? tab('all', 'Toutes', countAll) : null}
+        {hasToggle ? (bound.status === 'unavailable' ? unavailable : tab('session', 'Cette session', countSession)) : null}
+        {hasToggle ? null : <Box flexGrow={1} />}
+        <Text dimColor>{state.isLoading ? 'actualisation…' : state.fetchedAt ? state.fetchedAt.slice(11, 16) : ''}</Text>
+        {refreshControl}
       </Box>
     )
 
     if (state.status === 'error') {
       return (
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column" gap="lg">
           {top}
           <Text color="red" bold>
             Impossible de lire vos PR
@@ -396,7 +441,7 @@ export const register: Register = on => {
     }
     if (state.status !== 'ok') {
       return (
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column" gap="lg">
           {top}
           <Text dimColor>Chargement des PR…</Text>
         </Box>
@@ -405,7 +450,7 @@ export const register: Register = on => {
     const listed = filterPrs(state.prs, current, bound)
     if (listed.length === 0) {
       return (
-        <Box flexDirection="column" gap={1}>
+        <Box flexDirection="column" gap="lg">
           {top}
           <Text>{isFiltered ? 'Aucune PR ouverte liée à cette session.' : 'Aucune PR ouverte dans weeki-io.'}</Text>
         </Box>

@@ -452,7 +452,7 @@ test('collapsing a section closes the PR expanded in it: new feedback keeps its 
 
   await clock.set(Date.parse('2026-11-26T11:31:00Z'))
   gh.current = ok(commented.map(raw => (raw.id === 'P7' ? lateFeedback(raw) : raw)))
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect((w.store.get('seen') as Record<string, string>).P7).toBe('2026-11-26T08:00:00Z')
 
   await ui.press({ key: 'head:open' })
@@ -706,7 +706,7 @@ test('a collapsed section carries nouveau when one of its PRs has it; only Déta
       expect(await rowOf(ui, 'head:open')).toBe('› Ouvertes 2')
       // A comment from someone else lands on P7.
       gh.current = ok(TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CY', author: 'Yann', body: 'look', at: '2026-11-26T10:50:00Z' }] } : raw)))
-      await ui.press({ key: 'refresh' })
+      await pressControl(ui, 'refresh')
     }
     expect(await rowOf(ui, 'head:open')).toBe('› Ouvertes 2 nouveau')
     // An expanded section leaves the badge to the repository row.
@@ -828,7 +828,7 @@ for (const [move, before, after] of [
 
     await clock.set(Date.parse('2026-11-26T11:31:00Z'))
     gh.current = ok([lateFeedback(start, after)])
-    await ui.press({ key: 'refresh' })
+    await pressControl(ui, 'refresh')
 
     const rows = (await chevronRows(ui)).filter(row => row.key.startsWith('repo:'))
     expect(rows).toHaveLength(1)
@@ -852,7 +852,7 @@ test('collapsing a repository closes the PR expanded in it, so a refresh never c
   await pressControl(ui, 'pr:P67')
   await toggleRow(ui, repoKey('fix', 'weeki_atlas'))
   gh.current = ok(withReview())
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect((await rowOf(ui, repoKey('fix', 'weeki_atlas')))).toMatch(/nouveau/)
   await toggleRow(ui, repoKey('fix', 'weeki_atlas'))
   expect(await openDetails(ui)).toBeUndefined()
@@ -891,7 +891,7 @@ test('badge: set by a review from someone else, not by my own comment, cleared o
     ...TODAY.slice(1),
   ])
   await clock.set(Date.parse('2026-11-26T11:31:00Z'))
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await badge('pr:P67')).toBe(true)
 
   // The store holds the seen state and nothing else.
@@ -985,22 +985,22 @@ test('a gh failure shows an error, never an empty list; no PR shows a different 
 
   // gh missing altogether rejects the call: still an error.
   gh.current = new Error('spawn gh ENOENT')
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /ENOENT/ })).toBeDefined()
 
   // An answer that is not JSON is an error too.
   gh.current = { exitCode: 0, stdout: 'oops', stderr: '' }
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
 
   // A GraphQL error is surfaced.
   gh.current = { exitCode: 0, stdout: JSON.stringify({ errors: [{ message: 'Bad credentials' }] }), stderr: '' }
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /Bad credentials/ })).toBeDefined()
 
   // Zero PRs is a calm, different message.
   gh.current = ok([])
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /Aucune PR ouverte dans weeki-io/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeUndefined()
   await ui.unmount()
@@ -1022,7 +1022,7 @@ test('refresh: on open, every 2 minutes, and from the button', async ($, on) => 
   expect(w.calls).toHaveLength(3)
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(w.calls).toHaveLength(4)
   await ui.unmount()
 
@@ -1099,7 +1099,7 @@ test('expanding stamps what the pane shows, not the clock: a review posted betwe
   expect((w.store.get('seen') as Record<string, string>).P67).toBe('2026-11-26T10:30:00Z')
 
   gh.current = ok(withReview())
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await isBadged(ui, 67)).toBe(true)
   await ui.unmount()
 })
@@ -1180,7 +1180,7 @@ test('another session\'s seen stamps are merged, never overwritten, and only PRs
     P7: '2026-11-26T09:00:00Z',
     GONE: '2026-01-01T00:00:00Z',
   })
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   const stored = w.store.get('seen') as Record<string, string>
   expect(Object.keys(stored).sort()).toEqual(['P6', 'P67', 'P7'])
   // The later stamp wins: the other session's 10:45 for P67, and its 09:00 for P6 over this session's 11-24 one.
@@ -1205,7 +1205,7 @@ test('a store that fails never leaves the pane on "actualisation…" or stops a 
   await pressControl(ui, 'pr:P67')
   expect(await openDetails(ui)).toBeDefined()
   expect(await ui.find({ type: 'Text', text: CRAFTED })).toBeDefined()
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /actualisation/ })).toBeUndefined()
   expect(await keysOf(ui, 'pr:P7')).toEqual(['pr:P7'])
   await ui.unmount()
@@ -1252,7 +1252,7 @@ test('a comment posted while a refresh runs is not swallowed for a PR that had n
   gh.current = ok(
     TODAY.map(raw => (raw.id === 'P7' ? { ...raw, comments: [{ id: 'CX', author: 'Yann', body: 'during the fetch', at: '2026-11-26T11:02:30Z' }] } : raw)),
   )
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await isBadged(ui, 7)).toBe(true)
   await ui.unmount()
 })
@@ -1330,7 +1330,7 @@ test('more than 50 open PRs: every page of the search is read with fixed argv, a
 
   // The second page fails: the pane shows the error, never the first 50 alone.
   pages.CURS1 = { exitCode: 1, stdout: '', stderr: 'HTTP 502' }
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /502/ })).toBeDefined()
   expect(await keysOf(ui, 'pr:')).toEqual([])
@@ -1339,14 +1339,14 @@ test('more than 50 open PRs: every page of the search is read with fixed argv, a
   for (const bad of ['x"; rm -rf ~ #', '--hostname=evil.example', '$(whoami)', 'two words', '']) {
     w.calls.length = 0
     gh.current = { exitCode: 0, stdout: stdoutOf(many.slice(0, 50), bad), stderr: '' }
-    await ui.press({ key: 'refresh' })
+    await pressControl(ui, 'refresh')
     expect(w.calls).toHaveLength(1)
     expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   }
 
   // A page that does not say what follows is an error too.
   gh.current = { exitCode: 0, stdout: JSON.stringify({ data: { viewer: { login: ME }, search: { nodes: [] } } }), stderr: '' }
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /Impossible de lire vos PR/ })).toBeDefined()
   await ui.unmount()
 })
@@ -1414,7 +1414,7 @@ test('no control character from GitHub reaches the drawn tree, on any surface', 
   // An error from gh is text from outside as well.
   gh.current = { exitCode: 1, stdout: '', stderr: `boom\u001b]52;c;QQ==\u0007 \u009d` }
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await ui.find({ type: 'Text', text: /boom/ })).toBeDefined()
   expect(stringsOf(await ui.drawn()).filter(text => CONTROLS.test(text))).toEqual([])
   await ui.unmount()
@@ -1545,7 +1545,11 @@ const listedOf = async (ui: Ui) => {
   const links = await ui.findAll({ type: 'Link' })
   return links.map(link => String(link.props.href).replace('https://github.com/weeki-io/', '').replace('/pull/', '#')).sort()
 }
+/** The active tab: on desktop the band with the grey fill, elsewhere the primary Button; none when no tabs are drawn. */
 const modeOf = async (ui: Ui) => {
+  const boxes = await ui.findAll({ type: 'Box' })
+  const tabs = boxes.filter(box => box.key === 'tab:mode:all' || box.key === 'tab:mode:session')
+  if (tabs.length === 2) return tabs.find(box => box.props.backgroundColor === '#8E8E9326')?.key?.slice('tab:mode:'.length)
   const session = await ui.find({ type: 'Button', key: 'mode:session' })
   const all = await ui.find({ type: 'Button', key: 'mode:all' })
   if (!session || !all) return undefined
@@ -1567,10 +1571,10 @@ test('Cette session in a parent: its PRs and those of every sub-session at any d
     // Sections and repository grouping work as in Toutes; empty sections stay hidden.
     expect(await headsOf(ui)).toEqual(['∨ À corriger 1', '∨ Ouvertes 2', '∨ Drafts 1'])
 
-    await ui.press({ key: 'mode:all' })
+    await pressControl(ui, 'mode:all')
     expect(await modeOf(ui)).toBe('all')
     expect(await listedOf(ui)).toEqual(ALL)
-    await ui.press({ key: 'mode:session' })
+    await pressControl(ui, 'mode:session')
     await ui.unmount()
   }
   // The grand-parent's own session is never read.
@@ -1603,7 +1607,7 @@ test('a lone session whose bound PRs are merged or outside weeki-io opens on Tou
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await modeOf(ui)).toBe('all')
   expect(await listedOf(ui)).toEqual(ALL)
-  await ui.press({ key: 'mode:session' })
+  await pressControl(ui, 'mode:session')
   expect(await modeOf(ui)).toBe('session')
   expect(await ui.find({ type: 'Text', text: 'Aucune PR ouverte liée à cette session.' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Aucune PR ouverte dans weeki-io.' })).toBeUndefined()
@@ -1642,7 +1646,7 @@ for (const tool of ['get_session', 'list_sessions', 'get_status'] as const) {
 
       // The next refresh reads the family again; once the app answers, the toggle is back.
       fail.current = undefined
-      await ui.press({ key: 'refresh' })
+      await pressControl(ui, 'refresh')
       expect(await ui.find({ type: 'Text', text: 'Sessions indisponibles' })).toBeUndefined()
       expect(await modeOf(ui)).toBe('all')
       await ui.unmount()
@@ -1696,14 +1700,14 @@ test('the mode lives in session memory: toggling leaves $.store as it was, and e
   const before = JSON.stringify([...w.store])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'mode:all' })
-  await ui.press({ key: 'mode:session' })
-  await ui.press({ key: 'mode:all' })
+  await pressControl(ui, 'mode:all')
+  await pressControl(ui, 'mode:session')
+  await pressControl(ui, 'mode:all')
   expect(JSON.stringify([...w.store])).toBe(before)
   expect([...w.store.keys()].every(key => key === 'seen')).toBe(true)
 
   // A refresh keeps the mode the person chose; reopening the pane chooses again.
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(await modeOf(ui)).toBe('all')
   await $.command.run(PRS)
   await clock.settle()
@@ -1722,7 +1726,7 @@ test('the family and its bindings are re-read on /prs, on the 2-minute timer and
   await clock.advance(120_000)
   expect(reads()).toBe(2)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 'refresh' })
+  await pressControl(ui, 'refresh')
   expect(reads()).toBe(3)
   await ui.unmount()
   await $.command.run(PRS)
@@ -1744,23 +1748,119 @@ test('switching to Cette session closes a PR expanded outside the family: a refr
   await ui.unmount()
 
   const desk = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await desk.press({ key: 'mode:session' })
+  await pressControl(desk, 'mode:session')
   expect(await openDetails(desk)).toBeUndefined()
   // Back on Toutes, the PR stays closed, as after collapsing its repository.
-  await desk.press({ key: 'mode:all' })
+  await pressControl(desk, 'mode:all')
   await expandAll(desk)
   expect(await openDetails(desk)).toBeUndefined()
 
   // Hidden by the filter, a PR that gets new activity is not stamped by a refresh.
   await pressControl(desk, 'pr:P67')
   expect(await openDetails(desk)).toBeDefined()
-  await desk.press({ key: 'mode:session' })
+  await pressControl(desk, 'mode:session')
   const seenBefore = JSON.stringify(w.store.get('seen'))
   const later = FAMILY_LIST.map(raw =>
     raw.id === 'P67' ? { ...raw, comments: [...(raw.comments ?? []), { id: 'C9', author: 'YannAndreWeeki', body: 'one more', at: '2026-11-26T10:50:00Z' }] } : raw,
   )
   gh.current = ok(later)
-  await desk.press({ key: 'refresh' })
+  await pressControl(desk, 'refresh')
   expect(JSON.stringify(w.store.get('seen'))).toBe(seenBefore)
   await desk.unmount()
+})
+
+test('header: one full-width row of band tabs with their counts, the short time and a refresh icon; Buttons where no Client is drawn', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  const w = world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT)
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const boxes = await ui.findAll({ type: 'Box' })
+  const top = boxes.find(box => box.key === 'top')!
+  expect(top.props).toMatchObject({ flexDirection: 'row', width: '100%', alignItems: 'center' })
+  const row = top.children as Drawn[]
+  expect(row.map(child => child.props?.key ?? child.type)).toEqual(['tab:mode:all', 'tab:mode:session', 'Text', 'tab:refresh'])
+  const [all, session, stamp, refreshTab] = row as [Drawn, Drawn, Drawn, Drawn]
+  // The active tab carries the bands' fill and normal text; the other none and dim text; both grow, both lighten.
+  for (const [tab, isActive, label] of [
+    [session, true, 'Cette session 4'],
+    [all, false, `Toutes ${FAMILY_LIST.length}`],
+  ] as const) {
+    expect(tab.props).toMatchObject({ position: 'relative', flexGrow: 1, borderStyle: 'round', borderColor: '#8E8E9326' })
+    expect(tab.props?.backgroundColor).toBe(isActive ? '#8E8E9326' : undefined)
+    const { parts, cover } = partsOf(tab)
+    expect(parts.map(part => part.type)).toEqual(['Text'])
+    expect(lineText(parts[0]).join('')).toBe(label)
+    expect(parts[0]?.props?.dimColor).toBe(!isActive)
+    expect(drawnByKey(await ui.drawn(), String(tab.props?.key))?.hover).toEqual({ backgroundColor: '#8E8E9340', borderColor: '#8E8E9340' })
+    expectCover(cover, `band:${String(tab.props?.key).slice('tab:'.length)}`)
+  }
+  // A dim short time, no "Actualiser" and no long "à jour … UTC".
+  expect(stamp.props?.dimColor).toBe(true)
+  expect(lineText(stamp).join('')).toBe('11:00')
+  expect(await ui.find({ type: 'Text', text: /^Actualiser|^à jour|UTC/ })).toBeUndefined()
+  for (const key of ['refresh', 'mode:all', 'mode:session']) expect(await ui.find({ type: 'Button', key })).toBeUndefined()
+  // The refresh is an Svg in a band pressed through its Client; R on a focused band refreshes too.
+  const { parts, cover } = partsOf(refreshTab)
+  expect(parts.map(part => part.type)).toEqual(['Svg'])
+  expect(parts[0]?.props?.alt).toBe('Actualiser')
+  expectCover(cover, 'band:refresh')
+  const before = w.calls.length
+  await pressControl(ui, 'refresh')
+  expect(w.calls.length).toBe(before + 1)
+  await ui.key({ key: 'r', in: 'band:refresh' })
+  expect(w.calls.length).toBe(before + 2)
+  await ui.key({ key: 'r', in: 'band:mode:all' })
+  expect(w.calls.length).toBe(before + 3)
+  // A press on a tab switches the mode and moves the fill.
+  await pressControl(ui, 'mode:all')
+  expect(await modeOf(ui)).toBe('all')
+  await ui.unmount()
+
+  // Where no Client is drawn, the tabs and the refresh are Buttons, the refresh keeping its R hotkey.
+  for (const surface of ['vscode', 'mobile'] as const) {
+    const other = await $.ui.mount({ ...PANE, surface })
+    expect((await other.find({ type: 'Button', key: 'mode:all' }))?.text).toBe(`Toutes ${FAMILY_LIST.length}`)
+    expect((await other.find({ type: 'Button', key: 'mode:session' }))?.text).toBe('Cette session 4')
+    expect(await modeOf(other)).toBe('all')
+    expect((await other.find({ type: 'Button', key: 'refresh' }))?.props.hotkey).toBe('r')
+    await pressControl(other, 'mode:session')
+    expect(await modeOf(other)).toBe('session')
+    await pressControl(other, 'mode:all')
+    await other.unmount()
+  }
+  const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await terminal.findAll({ type: 'Svg' })).toEqual([])
+  expect((await terminal.find({ type: 'Button', key: 'refresh' }))?.props.hotkey).toBe('r')
+  const callsBefore = w.calls.length
+  await terminal.press({ key: 'refresh' })
+  expect(w.calls.length).toBe(callsBefore + 1)
+  await terminal.unmount()
+})
+
+test('header: while the app fails, Sessions indisponibles takes the Cette session tab, dim and not pressable', async ($, on) => {
+  const clock = mock.clock(on, { now: Date.parse('2026-11-26T11:00:00Z') })
+  world(on, { current: ok(FAMILY_LIST) })
+  app(on, PARENT, { fail: { current: { tool: 'list_sessions', how: 'deny' } } })
+  await $.command.run(PRS)
+  await clock.settle()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const top = (await ui.findAll({ type: 'Box' })).find(box => box.key === 'top')!
+  const row = top.children as Drawn[]
+  expect(row.map(child => child.props?.key ?? child.type)).toEqual(['tab:mode:all', 'tab:sessions', 'Text', 'tab:refresh'])
+  const sessions = row[1]!
+  expect(sessions.props).toMatchObject({ flexGrow: 1, borderStyle: 'round' })
+  expect(sessions.props?.backgroundColor).toBeUndefined()
+  expect(drawnByKey(await ui.drawn(), 'tab:sessions')?.hover).toBeUndefined()
+  expect(partsOf(sessions).cover).toBeUndefined()
+  const [label] = partsOf(sessions).parts
+  expect(label?.props?.dimColor).toBe(true)
+  expect(lineText(label).join('')).toBe('Sessions indisponibles')
+  // Toutes stays the active tab, with its count.
+  expect(row[0]?.props?.backgroundColor).toBe('#8E8E9326')
+  expect(lineText(partsOf(row[0]!).parts[0]).join('')).toBe(`Toutes ${FAMILY_LIST.length}`)
+  await ui.unmount()
 })
